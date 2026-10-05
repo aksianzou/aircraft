@@ -46,6 +46,7 @@ include_aseprite!(
     32x32 "gfx/bunker_top.png",
     32x32 "gfx/bunker.png",
     32x32 "gfx/soldier.png",
+    16x16 "gfx/foe.png",
     8x8 "gfx/digits.png",
     "gfx/lbl_score.png",
     "gfx/lbl_bomb.png",
@@ -90,6 +91,10 @@ include_aseprite!(
     "gfx/help_lift.png",
     "gfx/lvl_haul.png",
     "gfx/help_haul.png",
+    "gfx/lvl_swarm.png",
+    "gfx/help_swarm.png",
+    "gfx/lvl_crows.png",
+    "gfx/help_crows.png",
     "gfx/lvl_gate.png",
     "gfx/lvl_fpv.png",
     "gfx/lvl_convoy.png",
@@ -204,9 +209,10 @@ const T_TUFT: u8 = 14;
 const T_BUSH: u8 = 15;
 const T_PATCH: u8 = 16;
 
-const LEVEL_COUNT: u8 = 22;
-/// Guns own everything at this height and above. Under it, only their circles.
-const AA_CEIL: i32 = 15;
+const LEVEL_COUNT: u8 = 24;
+/// A battery sees the drone only inside its circle, and only under this height.
+/// At this height the airframe leaves every gun's sight.
+const AA_HIDE: i32 = 20;
 
 const KIND_BOMB: u8 = 0;
 const KIND_HE: u8 = 1;
@@ -252,6 +258,7 @@ const MAX_TRUCKS: usize = 4;
 const MAX_TANKS: usize = 3;
 const MAX_BUNKERS: usize = 3;
 const MAX_SOLDIERS: usize = 8;
+const MAX_FOES: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -307,7 +314,7 @@ enum Task {
     Rush,
     /// Trucks and men pushing for the same base.
     Push,
-    /// Day strike. Stay under the gun ceiling and follow the open lane.
+    /// Day strike. Under 20 a gun sees you only in its circle. At 20 it loses you.
     Lane,
     /// Night sight, tanks, and the same low lane between the guns.
     Flare,
@@ -315,12 +322,14 @@ enum Task {
     Nest,
     /// Kamikaze through the heat sight. Trucks sit in the open gaps.
     Dart,
-    /// Spotter locked under the ceiling, so the lane is the only road.
+    /// Spotter holds one height, under the line where the guns go blind, so the lane is the road.
     Bend,
     /// Heat sight. The bunkers sit past the lane.
     Skirt,
-    /// Small quad. It holds one charge, and only while looking straight down.
+    /// Small quad. It holds one charge and slides. The glass can look down or ahead.
     Fetch,
+    /// Hostile quads. Only the bullet brings one down.
+    Swarm,
 }
 
 /// What the glass shows. The side instruments stay in their own colours.
@@ -366,6 +375,7 @@ fn task_of(level: u8) -> Task {
         18 => Task::Skirt,
         19 => Task::Bend,
         20 | 21 => Task::Fetch,
+        22 | 23 => Task::Swarm,
         _ => Task::Guide,
     }
 }
@@ -403,6 +413,7 @@ struct Cache {
 struct Boom {
     x: i32,
     y: i32,
+    z: i32,
     frame: i16,
     alive: bool,
 }
@@ -466,6 +477,19 @@ struct Soldier {
     alive: bool,
 }
 
+/// Hostile quad. It holds one height and chases while the guns can see you.
+#[derive(Clone, Copy)]
+struct Foe {
+    x: i32,
+    y: i32,
+    z: i32,
+    home_x: i32,
+    home_y: i32,
+    /// Frames until another same-height bump can land.
+    cool: i16,
+    alive: bool,
+}
+
 #[derive(Clone, Copy)]
 struct Mark {
     tx: i32,
@@ -525,7 +549,7 @@ struct World {
     hover: bool,
     /// The one mortar round a small quad can carry. Fetch missions only.
     cargo: bool,
-    caches: [Cache; 3],
+    caches: [Cache; 6],
     /// Frames until the marked salvo. Zero means the sight is free.
     guide: i16,
     salvo: i8,
@@ -549,6 +573,7 @@ struct World {
     tanks: [Tank; MAX_TANKS],
     bunkers: [Bunker; MAX_BUNKERS],
     soldiers: [Soldier; MAX_SOLDIERS],
+    foes: [Foe; MAX_FOES],
 }
 
 /// mGBA keeps SRAM only when the ROM contains this tag.
@@ -598,6 +623,9 @@ fn load_progress() -> Progress {
     }
     if cleared & (1 << 11) != 0 {
         unlocked = unlocked.max(12).min(LEVEL_COUNT - 1);
+    }
+    if cleared & (1 << 21) != 0 {
+        unlocked = unlocked.max(22).min(LEVEL_COUNT - 1);
     }
     Progress {
         unlocked,
@@ -1004,6 +1032,8 @@ fn main(mut gba: agb::Gba) -> ! {
                     Task::Skirt => sprites::LVL_SKIRT.sprite(0),
                     Task::Fetch if world.level % LEVEL_COUNT == 21 => sprites::LVL_HAUL.sprite(0),
                     Task::Fetch => sprites::LVL_LIFT.sprite(0),
+                    Task::Swarm if world.level % LEVEL_COUNT == 23 => sprites::LVL_CROWS.sprite(0),
+                    Task::Swarm => sprites::LVL_SWARM.sprite(0),
                 };
                 show(&mut frame, card, 88, 40);
                 draw_digits(&mut frame, world.level as i32 + 1, 2, 64, 52);
@@ -1027,6 +1057,8 @@ fn main(mut gba: agb::Gba) -> ! {
                     Task::Skirt => sprites::HELP_SKIRT.sprite(0),
                     Task::Fetch if world.level % LEVEL_COUNT == 21 => sprites::HELP_HAUL.sprite(0),
                     Task::Fetch => sprites::HELP_LIFT.sprite(0),
+                    Task::Swarm if world.level % LEVEL_COUNT == 23 => sprites::HELP_CROWS.sprite(0),
+                    Task::Swarm => sprites::HELP_SWARM.sprite(0),
                     Task::Armor => sprites::HELP_ARMOR.sprite(0),
                     Task::Pill => sprites::HELP_PILL.sprite(0),
                     _ => sprites::HELP_QUAD.sprite(0),
@@ -1536,6 +1568,7 @@ fn start_tile(level: u8) -> (i32, i32) {
         Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => (22, 88),
         Task::Pill => (24, 86),
         Task::Fetch => (24, 90),
+        Task::Swarm => (24, 90),
     }
 }
 
@@ -1568,6 +1601,11 @@ fn gun_at(gun: &AaGun) -> (i32, i32) {
     ((gun.tx * 8 + 4) << 8, (gun.ty * 8 + 4) << 8)
 }
 
+/// The drone is in sight under `AA_HIDE`. At that height every gun loses it.
+fn guns_see(alt_px: i32) -> bool {
+    alt_px < AA_HIDE
+}
+
 fn aa_covers(guns: &[AaGun], x: i32, y: i32) -> bool {
     guns.iter().any(|gun| {
         let (gx, gy) = gun_at(gun);
@@ -1591,6 +1629,20 @@ fn terrain(level: u8, tx: i32, ty: i32) -> u8 {
     let (pad_x, pad_y) = start_tile(level);
     if (tx - pad_x).abs() <= 3 && (ty - pad_y).abs() <= 3 {
         return T_FLOOR;
+    }
+    // A charge pad: concrete square, dark tile in the middle. The quad sits there.
+    if charge_spots(level)
+        .iter()
+        .any(|&(cx, cy)| (tx - cx).abs() <= 1 && (ty - cy).abs() <= 1)
+    {
+        return if charge_spots(level)
+            .iter()
+            .any(|&(cx, cy)| tx == cx && ty == cy)
+        {
+            T_ROAD
+        } else {
+            T_FLOOR
+        };
     }
     let lx = tx.rem_euclid(REGION);
     let ly = ty.rem_euclid(REGION);
@@ -1701,11 +1753,21 @@ fn dead_cache() -> Cache {
 }
 
 /// Rounds to pick up. The later card keeps them farther from the pad.
-fn cache_spots(level: u8) -> [(i32, i32); 3] {
+/// The last three sit well south of the tanks, on open grass.
+fn cache_spots(level: u8) -> [(i32, i32); 6] {
     if level % LEVEL_COUNT == 21 {
-        [(14, 78), (34, 76), (24, 70)]
+        [(14, 78), (34, 76), (24, 70), (6, 96), (42, 96), (24, 112)]
     } else {
-        [(18, 82), (30, 82), (24, 76)]
+        [(18, 82), (30, 82), (24, 76), (8, 96), (40, 96), (24, 108)]
+    }
+}
+
+/// Where the mine quad can sit and fill the battery. Clear of the tanks.
+fn charge_spots(level: u8) -> &'static [(i32, i32)] {
+    match level % LEVEL_COUNT {
+        20 => &[(24, 62), (24, 102)],
+        21 => &[(24, 56), (24, 102)],
+        _ => &[],
     }
 }
 
@@ -1722,6 +1784,7 @@ fn dead_boom() -> Boom {
     Boom {
         x: 0,
         y: 0,
+        z: 0,
         frame: 0,
         alive: false,
     }
@@ -1797,12 +1860,38 @@ fn dead_soldier() -> Soldier {
     }
 }
 
+fn dead_foe() -> Foe {
+    Foe {
+        x: 0,
+        y: 0,
+        z: 0,
+        home_x: 0,
+        home_y: 0,
+        cool: 0,
+        alive: false,
+    }
+}
+
+/// Hostile quads. Only the later cards have them. `i32::MIN` means that slot is empty.
+fn foe_spots(level: u8) -> [(i32, i32); MAX_FOES] {
+    let placed: &[(i32, i32)] = match level % LEVEL_COUNT {
+        22 => &[(14, 72), (34, 72), (18, 56), (30, 56)],
+        23 => &[(10, 64), (38, 64), (16, 48), (32, 48), (24, 40), (8, 78)],
+        _ => &[],
+    };
+    let mut spots = [(i32::MIN, i32::MIN); MAX_FOES];
+    for (index, spot) in placed.iter().enumerate() {
+        spots[index] = *spot;
+    }
+    spots
+}
+
 /// Frames from the mark until the first rocket.
 const GUIDE_WAIT: i16 = 240;
 
-/// 0 on the first card, 16 on the last. Early guns wait and hit lighter.
+/// 0 on the first card, 16 on card 22. Cards after that stay at 16.
 fn heat(level: u8) -> i32 {
-    (level % LEVEL_COUNT) as i32 * 16 / 21
+    (level as i32).min(21) * 16 / 21
 }
 
 /// How fast a rush or a push walks north. 24 on the first card, 40 on the
@@ -1879,7 +1968,7 @@ impl World {
             vog: if bare { 0 } else { 16 },
             stick_hold: 0,
             stick_key: 0,
-            arm: if mode == Mode::Fpv {
+            arm: if mode == Mode::Fpv || matches!(task, Task::Swarm) {
                 ARM_GUN
             } else if fetch {
                 ARM_MINE
@@ -1905,6 +1994,13 @@ impl World {
                 Task::Lane | Task::Flare | Task::Dart | Task::Bend | Task::Skirt => 3,
                 Task::Nest => 4,
                 Task::Fetch => 3,
+                Task::Swarm => {
+                    if level == 23 {
+                        6
+                    } else {
+                        4
+                    }
+                }
             },
             fire_cd: 0,
             recover: 0,
@@ -1913,7 +2009,7 @@ impl World {
             falling: false,
             hover: fetch,
             cargo: false,
-            caches: [dead_cache(); 3],
+            caches: [dead_cache(); 6],
             guide: 0,
             salvo: 0,
             salvo_cd: 0,
@@ -1932,10 +2028,12 @@ impl World {
             tanks: [dead_tank(); MAX_TANKS],
             bunkers: [dead_bunker(); MAX_BUNKERS],
             soldiers: [dead_soldier(); MAX_SOLDIERS],
+            foes: [dead_foe(); MAX_FOES],
         };
         world.park(bg);
         world.refill(pump);
         world.seat_objective();
+        world.seat_foes();
         if matches!(task, Task::Convoy) {
             world.paint(bg, 0, 4, T_FLOOR);
             world.paint(bg, 0, 3, T_FLOOR);
@@ -1950,6 +2048,25 @@ impl World {
 
     fn gate_y(&self) -> i32 {
         (6 * 8 + 4) << 8
+    }
+
+    fn seat_foes(&mut self) {
+        for (index, (tx, ty)) in foe_spots(self.level).into_iter().enumerate() {
+            if tx == i32::MIN {
+                continue;
+            }
+            let x = (tx * 8 + 4) << 8;
+            let y = (ty * 8 + 4) << 8;
+            self.foes[index] = Foe {
+                x,
+                y,
+                z: 12 << 8,
+                home_x: x,
+                home_y: y,
+                cool: 0,
+                alive: true,
+            };
+        }
     }
 
     fn seat_objective(&mut self) {
@@ -2274,7 +2391,7 @@ impl World {
             Task::Nest => objective && !truck,
             Task::Push => objective,
             Task::Gate | Task::Hq | Task::Armor | Task::Pill | Task::Flare | Task::Skirt
-            | Task::Fetch => false,
+            | Task::Fetch | Task::Swarm => false,
         };
         if counts && self.targets > 0 {
             self.targets -= 1;
@@ -2318,13 +2435,18 @@ impl World {
     fn fetch_tick(&mut self, input: &ButtonController) {
         self.arm = ARM_MINE;
         self.mines = if self.cargo { 1 } else { 0 };
-        if !self.hover || self.signal_loss() >= 16 || !input.is_just_pressed(Button::B) {
+        if self.signal_loss() >= 16 || !input.is_just_pressed(Button::B) {
             return;
         }
         if self.cargo {
-            if self.try_shot(KIND_MINE) {
+            // Released from the ground, the round detonates in the claws.
+            if (self.alt >> 8) > 8 && self.try_shot(KIND_MINE) {
                 self.cargo = false;
             }
+            return;
+        }
+        // The claws close on the ground, not from cruise height.
+        if (self.alt >> 8) > 1 {
             return;
         }
         if let Some(slot) = self
@@ -2744,7 +2866,7 @@ impl World {
             && self.mode != Mode::Guide
             && self.signal_loss() < 16
         {
-            if input.is_just_pressed(Button::A) {
+            if input.is_just_pressed(Button::A) && !matches!(task_of(self.level), Task::Swarm) {
                 self.arm = (self.arm + 1) % 5;
             }
             if self.fire_cd > 0 {
@@ -2776,6 +2898,8 @@ impl World {
         self.check_convoy();
         self.check_rush();
         self.update_soldiers();
+        self.update_foes();
+        self.check_base();
         self.enemy_fire();
         self.aa_tick();
         self.update_booms();
@@ -2791,7 +2915,7 @@ impl World {
             && input.is_just_pressed(Button::B)
         {
             let (sin_r, cos_r) = self.heading();
-            let (nx, ny, _) = self.sight_aim(sin_r, cos_r);
+            let (nx, ny, _) = self.nose_ground(sin_r, cos_r);
             self.mark_x = nx;
             self.mark_y = ny;
             self.lay_ground_frame(nx, ny);
@@ -2827,7 +2951,7 @@ impl World {
         }
         if self.guide == 0 && self.salvo == 0 && self.signal_loss() < 16 && !self.falling {
             let (sin_r, cos_r) = self.heading();
-            let (nx, ny, _) = self.sight_aim(sin_r, cos_r);
+            let (nx, ny, _) = self.nose_ground(sin_r, cos_r);
             self.lay_ground_frame(nx, ny);
         }
     }
@@ -2905,7 +3029,7 @@ impl World {
         if self.mode != Mode::Quad || self.falling || loss >= 16 {
             self.hover = false;
         } else if fetch && input.is_just_pressed(Button::Select) {
-            // The quad keeps the same slide. Select only swaps the glass.
+            // Select swaps the glass. Looking ahead, the stick changes height.
             self.hover = !self.hover;
             self.sfx |= SFX_MARK;
         } else if !fetch && input.is_just_pressed(Button::Select) {
@@ -2928,7 +3052,9 @@ impl World {
         if self.pitch < num!(-0.12) {
             self.pitch = num!(-0.12);
         }
-        let yaw_step = if self.hover || fetch_fly {
+        // Overhead slides. The forward glass of the mine quad yaws like the others.
+        let turning = fetch_fly && !self.hover;
+        let yaw_step = if (self.hover || fetch_fly) && !turning {
             Num::new(0)
         } else {
             Num::new(tri_value(yaw_in)) / Num::new(160)
@@ -2937,7 +3063,7 @@ impl World {
         wrap_yaw(&mut self.yaw);
         // The airframe does not roll. The indicator leans into the turn and
         // settles back when the stick is released.
-        if !self.hover && !fetch_fly {
+        if !self.hover && (!fetch_fly || turning) {
             let want = yaw_step * Num::new(14);
             self.bank += (want - self.bank) / Num::new(6);
             if self.bank > num!(0.06) {
@@ -2952,18 +3078,40 @@ impl World {
         if self.hover || fetch_fly {
             // The stick slides the quad. Looking down does not change that speed.
             // Holding a direction speeds it up. A tap stays slow enough for a hatch.
+            // Forward glass: up and down are height, left and right turn.
+            let slide_pitch = if turning { Tri::Zero } else { pitch_in };
+            let slide_yaw = if turning { Tri::Zero } else { yaw_in };
             let creep = if fetch_fly {
-                self.quad_creep(pitch_in, yaw_in)
+                self.quad_creep(slide_pitch, slide_yaw)
             } else {
                 48
             };
-            let along = -tri_value(pitch_in) * creep;
-            let strafe = tri_value(yaw_in) * creep;
+            let along = -tri_value(slide_pitch) * creep;
+            let strafe = tri_value(slide_yaw) * creep;
             self.vx = (sin_r * along + cos_r * strafe) >> 8;
             self.vy = ((-cos_r) * along + sin_r * strafe) >> 8;
             self.x = wrap_coord(self.x + self.vx);
             self.y = wrap_coord(self.y + self.vy);
-            self.bank += (Num::new(0) - self.bank) / Num::new(6);
+            if !turning {
+                self.bank += (Num::new(0) - self.bank) / Num::new(6);
+            }
+            // The Fetch quad sits on a round. Only the forward glass climbs and descends.
+            if fetch_fly && !self.hover {
+                self.alt += -tri_value(pitch_in) * 48;
+                if self.alt < 0 {
+                    self.alt = 0;
+                }
+            }
+        } else if fetch && (self.falling || loss >= 16) {
+            // A dead battery is not a wing. The quad drops where it is.
+            self.vx = (self.vx * 3) / 4;
+            self.vy = (self.vy * 3) / 4;
+            self.x = wrap_coord(self.x + self.vx);
+            self.y = wrap_coord(self.y + self.vy);
+            self.alt -= 96;
+            if self.alt < 0 {
+                self.alt = 0;
+            }
         } else {
         let sp = self.pitch.sin().to_raw();
         let cp = self.pitch.cos().to_raw().max(0);
@@ -2994,7 +3142,8 @@ impl World {
         // Contact is the airframe itself, a few pixels out, so you can fly
         // up to a soldier before the charge goes.
         let touching = self.alt <= 4 << 8 && self.point_blank();
-        let dug_in = self.alt <= 0;
+        // A live Fetch quad sits on a round. A dead battery still hits the ground.
+        let dug_in = self.alt <= 0 && !(fetch && !self.falling && loss < 16);
         if touching || dug_in {
             if dug_in {
                 self.alt = 0;
@@ -3004,12 +3153,17 @@ impl World {
             } else if touching {
                 let _ = self.strike_at(bg, self.x, self.y);
             } else {
-                self.add_boom(self.x, self.y);
+                self.add_boom(self.x, self.y, 0);
             }
             self.falling = false;
-            self.recover = 22;
             self.vx = 0;
             self.vy = 0;
+            // An empty battery ends the sortie. A crash from the radio still returns to the pad.
+            if self.battery == 0 {
+                self.crashed = true;
+            } else {
+                self.recover = 22;
+            }
             return true;
         }
         true
@@ -3119,7 +3273,7 @@ impl World {
         goal: bool,
         objective: bool,
     ) {
-        self.add_boom(x, y);
+        self.add_boom(x, y, 0);
         self.score += points;
         self.claim(officer, truck, goal, objective);
         let tx = tile_of(x);
@@ -3169,13 +3323,31 @@ impl World {
         ((dist - near) * 16 / (far - near)).min(16)
     }
 
+    fn on_charger(&self) -> bool {
+        if !matches!(task_of(self.level), Task::Fetch) || self.falling || (self.alt >> 8) > 1 {
+            return false;
+        }
+        let tx = tile_of(self.x);
+        let ty = tile_of(self.y);
+        charge_spots(self.level)
+            .iter()
+            .any(|&(cx, cy)| (tx - cx).abs() <= 1 && (ty - cy).abs() <= 1)
+    }
+
     fn wear(&mut self) {
         let span = 64 - heat(self.level);
-        if self.age % span == 0 && self.battery > 0 {
+        if self.on_charger() {
+            if self.battery < 100 && self.age % 3 == 0 {
+                self.battery += 1;
+            }
+            if self.battery < 100 && self.age % 24 == 0 {
+                self.sfx |= SFX_MARK;
+            }
+        } else if self.age % span == 0 && self.battery > 0 {
             self.battery -= 1;
         }
         let loss = self.signal_loss();
-        if loss >= 14 && self.age % 40 == 0 && self.battery > 0 {
+        if !self.on_charger() && loss >= 14 && self.age % 40 == 0 && self.battery > 0 {
             self.battery -= 1;
         }
         if loss >= 16 {
@@ -3191,6 +3363,12 @@ impl World {
                 continue;
             }
             let distance = dist2_px(self.x, self.y, boom.x, boom.y);
+            // The burst is on the ground. Cruise height is above it, so a
+            // drop under a hover does not wreck the airframe. A low pass does.
+            let dz = ((self.alt - boom.z) >> 8).abs();
+            if dz > 8 {
+                continue;
+            }
             if distance < 20 * 20 {
                 self.hull -= 40;
             } else if distance < 36 * 36 {
@@ -3211,7 +3389,7 @@ impl World {
             return;
         }
         // A dead radio or a dead battery drops the nose. The airframe falls
-        // until it hits, instead of vanishing back to the pad.
+        // until it hits. An empty battery ends the sortie there.
         let was_falling = self.falling;
         let loss = self.signal_loss();
         if self.recover == 0 && (loss >= 16 || self.battery == 0) {
@@ -3230,34 +3408,18 @@ impl World {
     }
 
     fn try_shot(&mut self, kind: u8) -> bool {
-        let (sin_r, cos_r) = self.heading();
-        // Hover drops straight through the crosshair. Forward flight still leads.
-        let (x, y, vx, vy) = if self.hover {
-            (self.x, self.y, 0, 0)
-        } else {
-            let lead = if self.mode == Mode::Quad { 36 } else { 12 };
-            (
-                wrap_coord(self.x + sin_r * lead),
-                wrap_coord(self.y - cos_r * lead),
-                self.vx,
-                self.vy,
-            )
-        };
-        let z = self.alt;
+        // One release. The round leaves the airframe with the airframe's
+        // speed. The glass does not move the spawn.
         let Some(slot) = self.shots.iter_mut().find(|shot| !shot.alive) else {
             return false;
         };
         *slot = Shot {
-            x,
-            y,
-            z,
-            vx,
-            vy,
-            vz: if self.hover {
-                0
-            } else {
-                -((110 * self.pitch.sin().to_raw()) >> 8)
-            },
+            x: self.x,
+            y: self.y,
+            z: self.alt,
+            vx: self.vx,
+            vy: self.vy,
+            vz: -((110 * self.pitch.sin().to_raw()) >> 8),
             kind,
             life: 0,
             alive: true,
@@ -3268,13 +3430,10 @@ impl World {
         true
     }
 
-    /// Ground under the fixed crosshair. The tracer and the salvo land on that plus.
-    /// Looking up used to clamp the point at 200px and, past the horizon, snap it
-    /// back toward the airframe, so a far group never received the rockets.
-    fn sight_aim(&self, sin_r: i32, cos_r: i32) -> (i32, i32, i32) {
-        if self.hover {
-            return (self.x, self.y, 0);
-        }
+    /// Where the nose meets the ground. Pitch and height decide it. The glass
+    /// is drawn so this point sits on the crosshair, and the overhead picture
+    /// draws the crosshair on this point.
+    fn nose_ground(&self, sin_r: i32, cos_r: i32) -> (i32, i32, i32) {
         let view_cy = VIEW_Y + VIEW_H / 2;
         let drop = (view_cy - self.horizon()).max(4);
         let fwd = (self.alt as i64) * (FOCAL as i64) * (FLOOR_ZOOM as i64) / drop as i64;
@@ -3287,10 +3446,10 @@ impl World {
         )
     }
 
-    /// A burst to the point under the crosshair. It hurts people and trucks, not the ground.
+    /// A burst along the nose to the ground. It hurts people and trucks, not the ground.
     fn try_gun(&mut self) -> bool {
         let (sin_r, cos_r) = self.heading();
-        let (nx, ny, nz) = self.sight_aim(sin_r, cos_r);
+        let (nx, ny, nz) = self.nose_ground(sin_r, cos_r);
         let span = (nx as i64 - self.x as i64)
             .abs()
             .max((ny as i64 - self.y as i64).abs())
@@ -3321,8 +3480,13 @@ impl World {
         let Some(slot) = self.shots.iter_mut().find(|shot| !shot.alive) else {
             return false;
         };
-        let scatter_x = (hash(self.age, x) % 9) as i32 - 4;
-        let scatter_y = (hash(self.age.wrapping_add(9), y) % 9) as i32 - 4;
+        // A few pixels of scatter. Flak throws a wider burst: a machine that
+        // holds still would otherwise sit inside every shell, because the
+        // round is aimed at where it is now and does not lead.
+        let spread: u32 = if kind == KIND_FLAK { 41 } else { 9 };
+        let half = (spread as i32) / 2;
+        let scatter_x = (hash(self.age, x) % spread) as i32 - half;
+        let scatter_y = (hash(self.age.wrapping_add(9), y) % spread) as i32 - half;
         let tx = self.x.wrapping_add(scatter_x << 8);
         let ty = self.y.wrapping_add(scatter_y << 8);
         let dx = delta(tx, x);
@@ -3332,8 +3496,10 @@ impl World {
         let dist = adx.max(ady) + adx.min(ady) / 2;
         let muzzle = 1 << 8;
         let rise = self.alt - muzzle;
-        // Overhead: a flat gun has no horizontal run to climb along.
-        let overhead = dist < 10;
+        // A flat barrel cannot crane over its own hull. The old ten-pixel
+        // pin was smaller than the hatch, so hovering to aim ate the shells.
+        // Flak still points up.
+        let overhead = if slope < 8 { dist < TANK_NEAR } else { dist < 10 };
         let steps = if overhead {
             if slope >= 8 { 16 } else { 10 }
         } else {
@@ -3370,20 +3536,24 @@ impl World {
         true
     }
 
-    /// Under the ceiling the circles bite. Above it the guns see the whole route.
+    /// Under `AA_HIDE` a battery sees the drone inside its circle. At that
+    /// height and above, the drone is gone and the guns do not fire.
     fn aa_tick(&mut self) {
         let guns = aa_guns(task_of(self.level));
         if guns.is_empty() || self.recover > 0 {
             return;
         }
-        let low = (self.alt >> 8) < AA_CEIL;
-        let inside = aa_covers(guns, self.x, self.y);
-        if low && !inside {
+        if !guns_see(self.alt >> 8) {
+            return;
+        }
+        if !aa_covers(guns, self.x, self.y) {
             return;
         }
         let heat = heat(self.level);
         let chip = 1 + heat / 10;
-        if self.age % (44 - heat) == 0 {
+        // The circle burns while you stay in it. Twice as slow as the old
+        // tick, so crossing it and stopping to aim are not the same death.
+        if self.age % ((44 - heat) * 2) == 0 {
             self.hull -= chip;
             if self.hull < 0 {
                 self.hull = 0;
@@ -3423,8 +3593,8 @@ impl World {
             return;
         }
         let alt_px = self.alt >> 8;
-        // High enough and they never pick the drone out.
-        if alt_px > 16 {
+        // Same line as the batteries. Above it the drone is not there to shoot.
+        if !guns_see(alt_px) {
             return;
         }
         let keen = alt_px <= 7;
@@ -3524,6 +3694,21 @@ impl World {
         if z > 16 << 8 && life < 10 {
             return;
         }
+        let mut bird = None;
+        for (slot, foe) in self.foes.iter().enumerate() {
+            if foe.alive
+                && dist2_px(x, y, foe.x, foe.y) <= 8 * 8
+                && ((z - foe.z) >> 8).abs() <= 5
+            {
+                bird = Some(slot);
+                break;
+            }
+        }
+        if let Some(slot) = bird {
+            self.shots[index].alive = false;
+            self.hurt_foe(slot);
+            return;
+        }
         let mut man = None;
         for (slot, soldier) in self.soldiers.iter().enumerate() {
             if soldier.alive && dist2_px(x, y, soldier.x, soldier.y) <= 8 * 8 {
@@ -3579,6 +3764,73 @@ impl World {
                 self.paint(bg, tx, ty, T_CRATER);
             }
             self.shots[index].alive = false;
+        }
+    }
+
+    fn hurt_foe(&mut self, index: usize) {
+        let x = self.foes[index].x;
+        let y = self.foes[index].y;
+        let z = self.foes[index].z;
+        self.foes[index].alive = false;
+        self.add_boom(x, y, z);
+        self.score += 50;
+        self.sfx |= SFX_BOOM;
+        if matches!(task_of(self.level), Task::Swarm) && self.targets > 0 {
+            self.targets -= 1;
+            self.sfx |= SFX_MARK;
+        }
+    }
+
+    /// Holds one height. Chases under `AA_HIDE` and goes home above it.
+    /// The bullet is the only thing that brings one down. The same height is a bump.
+    fn update_foes(&mut self) {
+        let see = guns_see(self.alt >> 8) && !self.falling;
+        let px = self.x;
+        let py = self.y;
+        let pz = self.alt;
+        let defend = self.level % LEVEL_COUNT == 23;
+        let base_x = self.pad_x;
+        let base_y = self.pad_y;
+        let mut bump = false;
+        for foe in &mut self.foes {
+            if !foe.alive {
+                continue;
+            }
+            if foe.cool > 0 {
+                foe.cool -= 1;
+            }
+            // The last card flies at the pad. The one before it flies at you.
+            let (tx, ty) = if defend {
+                (base_x, base_y)
+            } else if see {
+                (px, py)
+            } else {
+                (foe.home_x, foe.home_y)
+            };
+            let dx = tx.wrapping_sub(foe.x) as i64;
+            let dy = ty.wrapping_sub(foe.y) as i64;
+            let dist = isqrt64(dx * dx + dy * dy);
+            if dist > 256 {
+                foe.x = foe.x.wrapping_add((dx * 72 / dist) as i32);
+                foe.y = foe.y.wrapping_add((dy * 72 / dist) as i32);
+            }
+            let dz = ((foe.z - pz) >> 8).abs();
+            if dz <= 2 && foe.cool == 0 && dist2_px(foe.x, foe.y, px, py) <= 12 * 12 {
+                foe.cool = 45;
+                let ox = foe.x.wrapping_sub(px) as i64;
+                let oy = foe.y.wrapping_sub(py) as i64;
+                let push = isqrt64(ox * ox + oy * oy).max(1);
+                foe.x = px.wrapping_add((ox * (18 << 8) / push) as i32);
+                foe.y = py.wrapping_add((oy * (18 << 8) / push) as i32);
+                if ox == 0 && oy == 0 {
+                    foe.y = py.wrapping_sub(18 << 8);
+                }
+                bump = true;
+            }
+        }
+        if bump {
+            self.hull = (self.hull - 16).max(0);
+            self.sfx |= SFX_BOOM;
         }
     }
 
@@ -3701,7 +3953,7 @@ impl World {
             if self.hull < 0 {
                 self.hull = 0;
             }
-            self.add_boom(self.x, self.y);
+            self.add_boom(self.x, self.y, z);
             return;
         }
         if life > 28 || z > 48 << 8 || z < 0 {
@@ -3849,7 +4101,7 @@ impl World {
     }
 
     fn explode(&mut self, bg: &mut AffineBackground, x: i32, y: i32, radius: i32, depth: i32, kind: u8) {
-        self.add_boom(x, y);
+        self.add_boom(x, y, 0);
         self.damage_tiles(bg, x, y, radius);
         let reach = radius * radius;
         let mut graves = [(0i32, 0i32); MAX_SOLDIERS + MAX_TRUCKS];
@@ -4049,6 +4301,20 @@ impl World {
         }
     }
 
+    /// The last card. A hostile quad that reaches the pad takes the base.
+    fn check_base(&mut self) {
+        if self.level % LEVEL_COUNT != 23 || self.targets <= 0 || self.crashed {
+            return;
+        }
+        let reached = self.foes.iter().any(|foe| {
+            foe.alive && dist2_px(foe.x, foe.y, self.pad_x, self.pad_y) <= 24 * 24
+        });
+        if reached {
+            self.add_boom(self.pad_x, self.pad_y, 0);
+            self.crashed = true;
+        }
+    }
+
     /// Crossing the gate line either clears the card or sends the plane back.
     fn cross_gate(&mut self) -> bool {
         if self.mode != Mode::Gate || self.targets <= 0 {
@@ -4074,7 +4340,7 @@ impl World {
         }
     }
 
-    fn add_boom(&mut self, x: i32, y: i32) {
+    fn add_boom(&mut self, x: i32, y: i32, z: i32) {
         let mut slot = 0;
         for (index, boom) in self.booms.iter().enumerate() {
             if !boom.alive {
@@ -4085,6 +4351,7 @@ impl World {
         self.booms[slot] = Boom {
             x: wrap_coord(x),
             y: wrap_coord(y),
+            z,
             frame: 0,
             alive: true,
         };
@@ -4337,7 +4604,10 @@ fn project(
         && scale > 0
     {
         let sx = WIDTH / 2 + (right >> 8) / scale;
-        let sy = 88 - (fwd >> 8) / scale;
+        // Height is the same quantity the forward glass uses. Looking down,
+        // it lifts the sprite off the map point instead of dropping it into
+        // the crosshair.
+        let sy = 88 - (fwd >> 8) / scale - (world_z >> 8) / scale;
         if !(-32..WIDTH + 32).contains(&sx) || !(-32..HEIGHT + 32).contains(&sy) {
             return None;
         }
@@ -4833,12 +5103,14 @@ fn draw_sight(frame: &mut agb::display::GraphicsFrame, world: &World) {
     let view_cy = VIEW_Y + VIEW_H / 2;
     if world.mode == Mode::Fpv {
         draw_fpv_rig(frame, world, view_cx, view_cy);
-    } else {
-        show(frame, sprites::RETICLE.sprite(0), view_cx - 8, view_cy - 8);
-        if world.mode == Mode::Guide {
-            draw_guide_glass(frame, world, view_cx, view_cy);
-        }
+        return;
     }
+    if world.mode == Mode::Guide {
+        draw_guide_glass(frame, world, view_cx, view_cy);
+    }
+    // Overhead, the nose point is often off the glass. The plus marks the
+    // ground under the airframe, which is the centre of that picture.
+    show(frame, sprites::RETICLE.sprite(0), view_cx - 8, view_cy - 8);
 }
 
 fn show_flip(
@@ -5237,7 +5509,7 @@ fn draw_static(frame: &mut agb::display::GraphicsFrame, world: &World) {
     }
 }
 
-/// Yellow dots are the air the guns do not own, and only while under the ceiling.
+/// Yellow dots are the air the guns do not own, while the drone is still in their sight.
 fn draw_aa_lanes(
     frame: &mut agb::display::GraphicsFrame,
     world: &World,
@@ -5247,7 +5519,7 @@ fn draw_aa_lanes(
     inst_y: i32,
 ) {
     let guns = aa_guns(task_of(world.level));
-    if guns.is_empty() || (world.alt >> 8) >= AA_CEIL {
+    if guns.is_empty() || !guns_see(world.alt >> 8) {
         return;
     }
     let samples = [
@@ -5280,6 +5552,52 @@ fn draw_radar_goals(
 ) {
     let mut pts = [(0i32, 0i32); 3];
     let n = goal_points(world, &mut pts);
+    if matches!(task_of(world.level), Task::Fetch) && !world.cargo {
+        for cache in &world.caches {
+            if !cache.alive {
+                continue;
+            }
+            let (bx, by) = radar_blip(
+                delta(cache.x, world.x),
+                delta(cache.y, world.y),
+                sin_r,
+                cos_r,
+            );
+            show_dot(frame, 0, radar_x, inst_y, bx, by);
+        }
+    }
+    if matches!(task_of(world.level), Task::Fetch) {
+        for &(tx, ty) in charge_spots(world.level) {
+            let (bx, by) = radar_blip(
+                delta((tx * 8 + 4) << 8, world.x),
+                delta((ty * 8 + 4) << 8, world.y),
+                sin_r,
+                cos_r,
+            );
+            show_dot(frame, 1, radar_x, inst_y, bx, by);
+        }
+    }
+    if world.level % LEVEL_COUNT == 23 {
+        let (bx, by) = radar_blip(
+            delta(world.pad_x, world.x),
+            delta(world.pad_y, world.y),
+            sin_r,
+            cos_r,
+        );
+        show_dot(frame, 1, radar_x, inst_y, bx, by);
+    }
+    for foe in &world.foes {
+        if !foe.alive {
+            continue;
+        }
+        let (bx, by) = radar_blip(
+            delta(foe.x, world.x),
+            delta(foe.y, world.y),
+            sin_r,
+            cos_r,
+        );
+        show_dot(frame, 0, radar_x, inst_y, bx, by);
+    }
     for index in 0..n {
         let (bx, by) = radar_blip(
             delta(pts[index].0, world.x),
@@ -5377,16 +5695,11 @@ fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
                 }
                 return n;
             } else {
-                let mut n = 0;
-                for cache in &world.caches {
-                    if cache.alive && n < 3 {
-                        pts[n] = (cache.x, cache.y);
-                        n += 1;
-                    }
-                }
-                n
+                // Every round is drawn on the dial below. Three slots cannot hold them.
+                0
             }
         }
+        Task::Swarm => 0,
     }
 }
 
@@ -5569,7 +5882,7 @@ fn draw_world(
             continue;
         }
         let Some((sx, sy)) = project(
-            world.x, world.y, world.alt, sin_r, cos_r, horizon, boom.x, boom.y, 0,
+            world.x, world.y, world.alt, sin_r, cos_r, horizon, boom.x, boom.y, boom.z,
         ) else {
             continue;
         };
@@ -5652,6 +5965,42 @@ fn draw_world(
             continue;
         }
         show(frame, sprites::MINE.sprite(0), sx - 4, sy - 4);
+    }
+    for foe in &world.foes {
+        if !foe.alive {
+            continue;
+        }
+        let alt_px = world.alt >> 8;
+        let fz = foe.z >> 8;
+        // Above the airframe, or on its height, there is no picture of them.
+        // The same height is a collision. Only a drone underneath is drawn.
+        if fz + 2 >= alt_px {
+            continue;
+        }
+        let Some((sx, sy)) = project(
+            world.x, world.y, world.alt, sin_r, cos_r, horizon, foe.x, foe.y, foe.z,
+        ) else {
+            continue;
+        };
+        let dx = delta(foe.x, world.x) >> 8;
+        let dy = delta(foe.y, world.y) >> 8;
+        let dz = alt_px - fz;
+        let dist = isqrt64(
+            dx as i64 * dx as i64 + dy as i64 * dy as i64 + dz as i64 * dz as i64,
+        )
+        .max(1);
+        let pixels = (16 * 56 / dist as i32).clamp(6, 24);
+        let half = pixels / 2;
+        if cockpit
+            && (sx - half < VIEW_X
+                || sx + half >= VIEW_X + VIEW_W
+                || sy - half < VIEW_Y
+                || sy + half >= VIEW_Y + VIEW_H)
+        {
+            continue;
+        }
+        let frame_i = if nadir_on() > 0 && horizon < 12 { 1 } else { 0 };
+        show_fit(frame, sprites::FOE.sprite(frame_i), sx, sy, 16, pixels);
     }
     for soldier in &world.soldiers {
         if !soldier.alive {

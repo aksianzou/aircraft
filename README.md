@@ -4,7 +4,7 @@ A reconnaissance aircraft for the Game Boy Advance. The cartridge is **`aircraft
 
 The field is fictional: grass, dirt tracks, trenches. The sky and the instruments do not repeat the map. The developer credit appears once, on the second splash: **ILICH GAMES**.
 
-Four aircraft. The spotter holds altitude and calls a salvo. The general-purpose drone carries a large set of charges and flies forward; **Select** switches it to a top-down view and a slow slide, and Select again restores the previous nose. The quadcopter of missions 21 and 22 always slides, and **Select** only changes the view: speed stays the same and grows while a direction is held. FPV is a kamikaze, with a wire running ahead to the charge. The top view is a shaded plan: a tank shows tracks, a turret, and a hatch in the centre. A mine, bomb, high explosive, and VOG dropped in a hover fall into the crosshair with no drift. **Start** opens pause: Resume continues the sortie, Exit returns to level select. Level progress is written to the save. A cleared level can be selected again.
+Four aircraft. The spotter holds altitude and calls a salvo. The general-purpose drone carries a large set of charges and flies forward; **Select** switches it to a top-down view and a slow slide, and Select again restores the previous nose. The quadcopter of missions 21 and 22 always slides, and **Select** only changes the view: speed stays the same and grows while a direction is held. FPV is a kamikaze, with a wire running ahead to the charge. The top view is a shaded plan: a tank shows tracks, a turret, and a hatch in the centre. A mine, bomb, high explosive, and VOG leave the aircraft with the aircraft's own speed. The crosshair is where the nose meets the ground, in the forward glass and in the overhead picture. An empty battery drops the aircraft, and the impact ends the sortie. **Start** opens pause: Resume continues the sortie, Exit returns to level select. Level progress is written to the save. A cleared level can be selected again.
 
 ## Glass
 
@@ -13,7 +13,7 @@ Four aircraft. The spotter holds altitude and calls a salvo. The general-purpose
 - Heat. Cold ground, hot vehicles and bunkers.
 - Guidance. Grey glass, no bombs. A light frame lies on the ground under the sight: it is part of the map and stays put when the camera leaves. B locks it. Four seconds later a salvo of six rockets arrives. The flash is white and only at the impact point. The spotter moves at the same speed as the infantry on a rush, and does not reach the posts before they do.
 
-In mGBA the d-pad is the cross, X is A, Z is B, Return is Start, and Backspace is Select.
+In mGBA the d-pad is the cross, X is A, Z is B, Return is Start, and Backspace is Select. On the mine quad, Select turns the glass forward: up climbs, down descends, and left and right turn. Looking down, the cross still slides.
 
 ## Missions
 
@@ -29,16 +29,18 @@ In mGBA the d-pad is the cross, X is A, Z is B, Return is Start, and Backspace i
 10. Armour, night. Three tanks far apart. Three bombs near each one are enough. A charge in the hatch takes a tank at once. The bullet does not.
 11. Bunkers, heat. Three bunkers. High explosive takes them. They fire if you descend.
 12. Column, guidance. Trucks crawl, so the mark has to lead them.
-13. Lane, day. Below 15 the radar shows yellow dots in the gaps clear of the guns. Above 15 the guns fire everywhere. The trucks are at the end of the lane.
+13. Lane, day. Under 20 a gun sees the drone only inside its circle, and the radar marks the clear air. At 20 and above the guns lose the drone. The trucks are at the end of the lane.
 14. Rush, guidance. Infantry run for the base posts. Place the mark ahead of the group: during the rockets' flight they walk into it.
 15. Flare, night. The same lane, three tanks. Put the charge in the hatch.
 16. Nest, FPV. Four men stand in the open gaps. Fly the drone onto them.
 17. Dart, FPV, heat. Three trucks in the same gaps.
 18. Push, guidance. Three groups: a truck and two men beside it. One mark per group, ahead of it. The right-hand group is first: it is closer to the posts, and the salvo reaches it from the pad.
 19. Skirt, heat. Three bunkers past the lane.
-20. Bend, guidance. Altitude is locked under the gun ceiling, so only the lane and the salvo remain.
-21. Lift. A quadcopter, looking straight down from the start. It holds one mine. B over a mine picks it up, and the next B drops it into a tank hatch. Select changes the view. Speed depends on how long the stick is held.
+20. Bend, guidance. The spotter cannot climb, so it stays in the guns' sight. Only the lane and the salvo remain.
+21. Lift. A quadcopter, looking straight down from the start. Select turns the glass forward: down sets it on the ground, and left and right turn. B on a mine picks the round up. Up climbs clear, then B over a tank hatch drops it. Looking down, the cross slides. Six rounds: three near the pad, three farther south and clear of the tanks. Two charge pads sit clear of the tanks, a dark tile in a concrete square, and they show yellow on the radar. Sit on one and the battery climbs. Speed depends on how long the stick is held.
 22. Haul. The same, with the mines and tanks farther out. While a mine is in the claws, the radar shows the tanks.
+23. Swarm. Four hostile drones at one height. Climb and they are underneath: the picture grows as they get nearer. Drop onto their height and a close pass is a collision. Only the bullet brings one down. Above you, they are not in the glass.
+24. Crows. Six hostile drones fly at the pad. The yellow radar mark is the base. Shoot them down before one reaches the concrete. Climb and they show underneath, nearer ones larger. On their height a close pass is a collision. Only the bullet brings one down.
 
 ## Build
 
