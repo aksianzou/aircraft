@@ -81,6 +81,10 @@ include_aseprite!(
     "gfx/help_bend.png",
     "gfx/lvl_skirt.png",
     "gfx/help_skirt.png",
+    "gfx/lvl_lift.png",
+    "gfx/help_lift.png",
+    "gfx/lvl_haul.png",
+    "gfx/help_haul.png",
     "gfx/lvl_gate.png",
     "gfx/lvl_fpv.png",
     "gfx/lvl_convoy.png",
@@ -179,7 +183,7 @@ const T_TUFT: u8 = 14;
 const T_BUSH: u8 = 15;
 const T_PATCH: u8 = 16;
 
-const LEVEL_COUNT: u8 = 20;
+const LEVEL_COUNT: u8 = 22;
 /// Guns own everything at this height and above. Under it, only their circles.
 const AA_CEIL: i32 = 15;
 
@@ -275,6 +279,8 @@ enum Task {
     Bend,
     /// Heat sight. The bunkers sit past the lane.
     Skirt,
+    /// Small quad. It holds one charge, and only while looking straight down.
+    Fetch,
 }
 
 /// What the glass shows. The side instruments stay in their own colours.
@@ -319,6 +325,7 @@ fn task_of(level: u8) -> Task {
         17 => Task::Push,
         18 => Task::Skirt,
         19 => Task::Bend,
+        20 | 21 => Task::Fetch,
         _ => Task::Guide,
     }
 }
@@ -341,6 +348,14 @@ struct Mine {
     x: i32,
     y: i32,
     arm: i16,
+    alive: bool,
+}
+
+/// A charge sitting on the grass. The quad can hold one of these.
+#[derive(Clone, Copy)]
+struct Cache {
+    x: i32,
+    y: i32,
     alive: bool,
 }
 
@@ -464,6 +479,9 @@ struct World {
     falling: bool,
     /// Quad only. Holds height, looks straight down, and the stick slides.
     hover: bool,
+    /// The one charge a small quad can carry. Fetch missions only.
+    cargo: bool,
+    caches: [Cache; 3],
     /// Frames until the marked salvo. Zero means the sight is free.
     guide: i16,
     salvo: i8,
@@ -491,7 +509,7 @@ struct Progress {
     /// Highest mission index the arrows may select.
     unlocked: u8,
     /// Bit i is set once mission i has been cleared.
-    cleared: u16,
+    cleared: u32,
     level: u8,
 }
 
@@ -509,9 +527,15 @@ fn load_progress() -> Progress {
             level: 0,
         };
     }
-    let mut cleared = raw[5] as u16;
+    let mut cleared = raw[5] as u32;
     if raw[9] == raw[8] ^ 0xA5 {
-        cleared |= (raw[8] as u16) << 8;
+        cleared |= (raw[8] as u32) << 8;
+    }
+    if raw[11] == raw[10] ^ 0x3C {
+        cleared |= (raw[10] as u32) << 16;
+    }
+    if raw[13] == raw[12] ^ 0xC3 {
+        cleared |= (raw[12] as u32) << 24;
     }
     let mut unlocked = raw[4].min(LEVEL_COUNT - 1);
     // A finished FPV card already earned the spotter mission added after it.
@@ -535,7 +559,9 @@ fn load_progress() -> Progress {
 fn store_progress(progress: &Progress) {
     let level = progress.level.min(progress.unlocked);
     let lo = (progress.cleared & 0xFF) as u8;
-    let hi = (progress.cleared >> 8) as u8;
+    let hi = ((progress.cleared >> 8) & 0xFF) as u8;
+    let mid = ((progress.cleared >> 16) & 0xFF) as u8;
+    let top = ((progress.cleared >> 24) & 0xFF) as u8;
     let bytes = [
         0x41,
         0x52,
@@ -547,6 +573,10 @@ fn store_progress(progress: &Progress) {
         progress.unlocked ^ lo ^ level ^ 0x5A,
         hi,
         hi ^ 0xA5,
+        mid,
+        mid ^ 0x3C,
+        top,
+        top ^ 0xC3,
     ];
     for (index, byte) in bytes.into_iter().enumerate() {
         unsafe {
@@ -649,8 +679,8 @@ fn ambience(mixer: &mut agb::sound::mixer::Mixer, world: &World, shot: bool, ble
     }
 }
 
-fn sram_load() -> [u8; 10] {
-    let mut raw = [0u8; 10];
+fn sram_load() -> [u8; 14] {
+    let mut raw = [0u8; 14];
     for (index, byte) in raw.iter_mut().enumerate() {
         *byte = unsafe { (0x0E00_0000 as *const u8).add(index).read_volatile() };
     }
@@ -783,7 +813,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 let restart = world.again;
                 if world.targets <= 0 {
                     tone(&mut mixer, CLEAR_SFX);
-                    progress.cleared |= 1u16 << world.level;
+                    progress.cleared |= 1u32 << world.level;
                     if world.level + 1 < LEVEL_COUNT {
                         progress.unlocked = progress.unlocked.max(world.level + 1);
                     }
@@ -922,10 +952,12 @@ fn main(mut gba: agb::Gba) -> ! {
                     Task::Dart => sprites::LVL_DART.sprite(0),
                     Task::Bend => sprites::LVL_BEND.sprite(0),
                     Task::Skirt => sprites::LVL_SKIRT.sprite(0),
+                    Task::Fetch if world.level % LEVEL_COUNT == 21 => sprites::LVL_HAUL.sprite(0),
+                    Task::Fetch => sprites::LVL_LIFT.sprite(0),
                 };
                 show(&mut frame, card, 88, 40);
-                draw_digits(&mut frame, world.level as i32 + 1, 1, 72, 52);
-                if progress.cleared & (1u16 << world.level) != 0 {
+                draw_digits(&mut frame, world.level as i32 + 1, 2, 64, 52);
+                if progress.cleared & (1u32 << world.level) != 0 {
                     show(&mut frame, sprites::DOT.sprite(1), 84, 52);
                 }
                 let help = match task_of(world.level) {
@@ -943,6 +975,8 @@ fn main(mut gba: agb::Gba) -> ! {
                     Task::Dart => sprites::HELP_DART.sprite(0),
                     Task::Bend => sprites::HELP_BEND.sprite(0),
                     Task::Skirt => sprites::HELP_SKIRT.sprite(0),
+                    Task::Fetch if world.level % LEVEL_COUNT == 21 => sprites::HELP_HAUL.sprite(0),
+                    Task::Fetch => sprites::HELP_LIFT.sprite(0),
                     Task::Armor => sprites::HELP_ARMOR.sprite(0),
                     Task::Pill => sprites::HELP_PILL.sprite(0),
                     _ => sprites::HELP_QUAD.sprite(0),
@@ -1242,6 +1276,7 @@ fn start_tile(level: u8) -> (i32, i32) {
         Task::Rush | Task::Push => (24, 64),
         Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => (22, 88),
         Task::Pill => (24, 86),
+        Task::Fetch => (24, 90),
     }
 }
 
@@ -1398,6 +1433,23 @@ fn dead_mine() -> Mine {
     }
 }
 
+fn dead_cache() -> Cache {
+    Cache {
+        x: 0,
+        y: 0,
+        alive: false,
+    }
+}
+
+/// Three charges. The later card sits farther from the pad, still inside the radio.
+fn cache_spots(level: u8) -> [(i32, i32); 3] {
+    if level % LEVEL_COUNT == 21 {
+        [(8, 62), (40, 58), (24, 44)]
+    } else {
+        [(16, 74), (32, 70), (24, 58)]
+    }
+}
+
 fn dead_boom() -> Boom {
     Boom {
         x: 0,
@@ -1510,6 +1562,8 @@ impl World {
         let start_x = (tx * 8 + 4) << 8;
         let start_y = (ty * 8 + 4) << 8;
         let start_alt = alt << 8;
+        let fetch = matches!(task, Task::Fetch);
+        let bare = mode == Mode::Fpv || mode == Mode::Guide || fetch;
         let mut world = Self {
             marks: vec![dead_mark(); MAX_MARKS],
             mark_len: 0,
@@ -1530,22 +1584,16 @@ impl World {
             yaw: num!(0),
             pitch: num!(0),
             bank: num!(0),
-            bombs: if mode == Mode::Fpv || mode == Mode::Guide {
-                0
+            bombs: if bare { 0 } else { 40 },
+            he: if bare { 0 } else { 8 },
+            mines: if bare { 0 } else { 8 },
+            arm: if mode == Mode::Fpv {
+                ARM_GUN
+            } else if fetch {
+                ARM_MINE
             } else {
-                40
+                ARM_BOMB
             },
-            he: if mode == Mode::Fpv || mode == Mode::Guide {
-                0
-            } else {
-                8
-            },
-            mines: if mode == Mode::Fpv || mode == Mode::Guide {
-                0
-            } else {
-                8
-            },
-            arm: if mode == Mode::Fpv { ARM_GUN } else { ARM_BOMB },
             hull: 100,
             battery: 100,
             blackout: 0,
@@ -1564,13 +1612,16 @@ impl World {
                 Task::Push => 9,
                 Task::Lane | Task::Flare | Task::Dart | Task::Bend | Task::Skirt => 3,
                 Task::Nest => 4,
+                Task::Fetch => 3,
             },
             fire_cd: 0,
             recover: 0,
             crashed: false,
             again: false,
             falling: false,
-            hover: false,
+            hover: fetch,
+            cargo: false,
+            caches: [dead_cache(); 3],
             guide: 0,
             salvo: 0,
             salvo_cd: 0,
@@ -1868,6 +1919,15 @@ impl World {
                     };
                 }
             }
+            Task::Fetch => {
+                for (index, (tx, ty)) in cache_spots(self.level).into_iter().enumerate() {
+                    self.caches[index] = Cache {
+                        x: (tx * 8 + 4) << 8,
+                        y: (ty * 8 + 4) << 8,
+                        alive: true,
+                    };
+                }
+            }
             Task::Skirt => {
                 let spots = [(14, 24), (24, 22), (32, 24)];
                 for (index, (tx, ty)) in spots.into_iter().enumerate() {
@@ -1903,7 +1963,8 @@ impl World {
             Task::Rush => objective && !truck,
             Task::Nest => objective && !truck,
             Task::Push => objective,
-            Task::Gate | Task::Hq | Task::Armor | Task::Pill | Task::Flare | Task::Skirt => false,
+            Task::Gate | Task::Hq | Task::Armor | Task::Pill | Task::Flare | Task::Skirt
+            | Task::Fetch => false,
         };
         if counts && self.targets > 0 {
             self.targets -= 1;
@@ -1921,6 +1982,41 @@ impl World {
     fn claim_pill(&mut self) {
         if matches!(task_of(self.level), Task::Pill | Task::Skirt) && self.targets > 0 {
             self.targets -= 1;
+            self.sfx |= SFX_MARK;
+        }
+    }
+
+    /// Hover over a charge and take it. Hover over the pad and put it down.
+    /// The quad holds one. Setting it down anywhere else leaves it on the grass.
+    fn fetch_tick(&mut self, input: &ButtonController) {
+        self.arm = ARM_MINE;
+        self.mines = if self.cargo { 1 } else { 0 };
+        if !self.hover || self.signal_loss() >= 16 || !input.is_just_pressed(Button::B) {
+            return;
+        }
+        if self.cargo {
+            if dist2_px(self.x, self.y, self.pad_x, self.pad_y) <= 18 * 18 {
+                self.cargo = false;
+                if self.targets > 0 {
+                    self.targets -= 1;
+                    self.sfx |= SFX_MARK;
+                }
+            } else if let Some(slot) = self.caches.iter().position(|cache| !cache.alive) {
+                self.caches[slot].x = self.x;
+                self.caches[slot].y = self.y;
+                self.caches[slot].alive = true;
+                self.cargo = false;
+                self.sfx |= SFX_MARK;
+            }
+            return;
+        }
+        if let Some(slot) = self
+            .caches
+            .iter()
+            .position(|cache| cache.alive && dist2_px(self.x, self.y, cache.x, cache.y) <= 16 * 16)
+        {
+            self.caches[slot].alive = false;
+            self.cargo = true;
             self.sfx |= SFX_MARK;
         }
     }
@@ -2324,7 +2420,9 @@ impl World {
             return;
         }
 
-        if self.mode != Mode::Gate
+        if matches!(task_of(self.level), Task::Fetch) {
+            self.fetch_tick(input);
+        } else if self.mode != Mode::Gate
             && self.mode != Mode::Fpv
             && self.mode != Mode::Guide
             && self.signal_loss() < 16
@@ -2433,6 +2531,9 @@ impl World {
         // A dead link or a fall drops the hover. Select on the quad switches it.
         if self.mode != Mode::Quad || self.falling || loss >= 16 {
             self.hover = false;
+        } else if matches!(task_of(self.level), Task::Fetch) {
+            // This airframe only hovers. Select does not turn it into a plane.
+            self.hover = true;
         } else if input.is_just_pressed(Button::Select) {
             self.hover = !self.hover;
             self.sfx |= SFX_MARK;
@@ -2475,8 +2576,14 @@ impl World {
         let (sin_r, cos_r) = self.heading();
         if self.hover {
             // The glass stays down. The stick creeps over the point instead of flying.
-            let along = -tri_value(pitch_in) * 48;
-            let strafe = tri_value(yaw_in) * 48;
+            // A fetch quad crosses the field; a strike quad only creeps onto a hatch.
+            let creep = if matches!(task_of(self.level), Task::Fetch) {
+                220
+            } else {
+                48
+            };
+            let along = -tri_value(pitch_in) * creep;
+            let strafe = tri_value(yaw_in) * creep;
             self.vx = (sin_r * along + cos_r * strafe) >> 8;
             self.vy = ((-cos_r) * along + sin_r * strafe) >> 8;
             self.x = wrap_coord(self.x + self.vx);
@@ -4785,6 +4892,21 @@ fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
             1
         }
         Task::Fpv => nearest_marked(world, pts, true, false),
+        Task::Fetch => {
+            if world.cargo {
+                pts[0] = (world.pad_x, world.pad_y);
+                1
+            } else {
+                let mut n = 0;
+                for cache in &world.caches {
+                    if cache.alive && n < 3 {
+                        pts[n] = (cache.x, cache.y);
+                        n += 1;
+                    }
+                }
+                n
+            }
+        }
     }
 }
 
@@ -5025,6 +5147,20 @@ fn draw_world(
         }
         let Some((sx, sy)) = project(
             world.x, world.y, world.alt, sin_r, cos_r, horizon, mine.x, mine.y, 0,
+        ) else {
+            continue;
+        };
+        if !in_view(sx, sy, cockpit) || sy < floor {
+            continue;
+        }
+        show(frame, sprites::MINE.sprite(0), sx - 4, sy - 4);
+    }
+    for cache in &world.caches {
+        if !cache.alive {
+            continue;
+        }
+        let Some((sx, sy)) = project(
+            world.x, world.y, world.alt, sin_r, cos_r, horizon, cache.x, cache.y, 0,
         ) else {
             continue;
         };
