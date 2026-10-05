@@ -1,0 +1,8 @@
+/target
+ps1/build/
+__pycache__/
+*.gba
+*.sav
+*.cdb
+.DS_Store
+tools/gbdk/
