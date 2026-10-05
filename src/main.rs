@@ -41,6 +41,9 @@ include_aseprite!(
     16x16 "gfx/boom.png",
     32x32 "gfx/truck.png",
     32x32 "gfx/tank.png",
+    32x32 "gfx/tank_top.png",
+    32x32 "gfx/truck_top.png",
+    32x32 "gfx/bunker_top.png",
     32x32 "gfx/bunker.png",
     32x32 "gfx/soldier.png",
     8x8 "gfx/digits.png",
@@ -113,6 +116,7 @@ include_aseprite!(
     32x32 "gfx/crack.png",
     8x8 "gfx/static.png",
     8x8 "gfx/bead.png",
+    32x16 "gfx/shadow.png",
     8x8 "gfx/bracket.png",
     8x8 "gfx/north.png",
     "gfx/pause_resume.png",
@@ -121,6 +125,9 @@ include_aseprite!(
     "gfx/pause_exit_on.png",
     64x64 "gfx/noise.png",
     64x64 "gfx/flash.png",
+    32x32 "gfx/sun.png",
+    32x32 "gfx/moon.png",
+    8x8 "gfx/star.png",
 );
 
 static MUSIC: SoundData = include_wav!("sfx/music.wav");
@@ -153,10 +160,21 @@ const SPAN: i32 = 60;
 const REGION: i32 = 64;
 const MAX_MARKS: usize = 128;
 const FOCAL: i32 = 160;
+/// Sky headings, in the same 8.8 turns as yaw. The moon is due north, so a
+/// level run keeps it above the glass and a look up puts it on the crosshair.
+/// The sun sits off that line.
+const MOON_AZIMUTH: i32 = 0;
+const SUN_AZIMUTH: i32 = 16;
+const MOON_ELEV: i32 = 24;
+const SUN_ELEV: i32 = 22;
 /// Same factor the mode 7 floor uses, so a world point lands on its scanline.
 /// Low enough that a moderate altitude still shows a field, not a ribbon.
 const FLOOR_ZOOM: i32 = 5;
 const GRAVITY: i32 = 2;
+/// Rise over run, in eighths. A tank barrel stays near the level, so a machine
+/// sitting above the turret is outside the arc. Flak points up.
+const TANK_SLOPE: i32 = 3;
+const FLAK_SLOPE: i32 = 48;
 /// Mode 7 sits in this rectangle. The margins are the instrument frame, so the
 /// far corners of the map stay off the picture.
 const VIEW_X: i32 = 32;
@@ -514,6 +532,12 @@ struct World {
     salvo_cd: i8,
     mark_x: i32,
     mark_y: i32,
+    /// Tile the ground frame is built around. `i32::MIN` means there is no frame.
+    guide_cx: i32,
+    guide_cy: i32,
+    guide_frame_n: u8,
+    /// Previous tile under each cell of the ground frame, so the square can leave.
+    guide_frame: [(i32, i32, u8); 16],
     /// IR bloom after a blast. Counts down to the plain illuminator picture.
     bloom: i16,
     /// Gun, drop and blast cues for this frame.
@@ -720,7 +744,7 @@ fn main(mut gba: agb::Gba) -> ! {
     gfx.set_background_palettes(backgrounds::PALETTES);
     // Colour 0 is the backdrop and is unused by the ground tiles. The sky is
     // just this fill; clouds and ridges are sprites on top of it.
-    gfx.set_background_palette_colour_256(0, Rgb::new(88, 144, 200).to_rgb15());
+    gfx.set_background_palette_colour_256(0, Rgb::new(120, 152, 168).to_rgb15());
 
     // agb refuses a 16 KB map (its heap check is exclusive), so the loader is
     // 64×64. The real 128×128 window is written straight into the next 16 KB.
@@ -924,7 +948,7 @@ fn main(mut gba: agb::Gba) -> ! {
                     Sensor::Night => Rgb::new(1, 8, 2),
                     Sensor::Heat => Rgb::new(2, 1, 4),
                     Sensor::Ir => Rgb::new(5, 5, 5),
-                    Sensor::Day => Rgb::new(88, 144, 200),
+                    Sensor::Day => Rgb::new(120, 152, 168),
                 }
             }
             .to_rgb15(),
@@ -1024,6 +1048,9 @@ fn main(mut gba: agb::Gba) -> ! {
             }
             Phase::Splash => {}
         }
+        if playing && horizon > 12 {
+            draw_glass_glare(&mut frame, &world, horizon, sensor);
+        }
         draw_world(
             &mut frame,
             &world,
@@ -1033,13 +1060,7 @@ fn main(mut gba: agb::Gba) -> ! {
             cockpit,
             sensor,
         );
-        draw_horizon(
-            &mut frame,
-            &world,
-            sky_h,
-            cockpit,
-            !matches!(sensor, Sensor::Day),
-        );
+        draw_horizon(&mut frame, &world, horizon, sky_h, cockpit, sensor);
 
         mixer.frame();
         frame.commit();
@@ -1144,21 +1165,233 @@ fn arm_haze(bloom: i32) {
 
 /// A distant backdrop only. It does not follow the field. Clouds and mist are
 /// submitted first so they sit in front of the skyline and soften its edge.
+/// The sun and the moon are behind that haze. Stars are the furthest layer.
 fn draw_horizon(
     frame: &mut agb::display::GraphicsFrame,
     world: &World,
+    horizon: i32,
     sky_h: i32,
     cockpit: bool,
-    night: bool,
+    sensor: Sensor,
 ) {
-    if night {
+    if horizon < 12 {
         return;
     }
     let pan = world.yaw.to_raw();
     let alt_px = (world.alt >> 8).max(1);
-    draw_clouds(frame, pan / 3, sky_h, alt_px, cockpit);
-    draw_mist(frame, pan / 2, sky_h, alt_px, cockpit);
-    draw_skyline(frame, pan, sky_h, cockpit);
+    match sensor {
+        Sensor::Night => {
+            draw_moon(frame, world, horizon, cockpit);
+            draw_stars(frame, world, horizon, cockpit);
+        }
+        Sensor::Day => {
+            draw_clouds(frame, pan / 3, sky_h, alt_px, cockpit);
+            draw_mist(frame, pan / 2, sky_h, alt_px, cockpit);
+            draw_skyline(frame, pan, sky_h, cockpit);
+            draw_sun(frame, world, horizon, cockpit);
+        }
+        Sensor::Heat | Sensor::Ir => {}
+    }
+}
+
+/// Where a fixed sky heading lands. `None` when it is behind the glass or
+/// below the horizon.
+fn sky_point(yaw: Num<i32, 8>, azimuth: i32, elev: i32, horizon: i32) -> Option<(i32, i32)> {
+    let mut delta = azimuth - yaw.to_raw();
+    delta = delta.rem_euclid(256);
+    if delta > 128 {
+        delta -= 256;
+    }
+    let ang = Num::<i32, 8>::new(delta) / Num::new(256);
+    let ahead = ang.cos().to_raw();
+    if ahead < 48 {
+        return None;
+    }
+    let side = ang.sin().to_raw();
+    let x = WIDTH / 2 + side * FOCAL / ahead;
+    let y = horizon - elev;
+    if y > horizon {
+        return None;
+    }
+    Some((x, y))
+}
+
+fn draw_sun(frame: &mut agb::display::GraphicsFrame, world: &World, horizon: i32, cockpit: bool) {
+    let Some((x, y)) = sky_point(world.yaw, SUN_AZIMUTH, SUN_ELEV, horizon) else {
+        return;
+    };
+    show_sky(frame, sprites::SUN.sprite(0), x - 16, y - 16, 32, 32, cockpit, horizon, None);
+}
+
+fn draw_moon(frame: &mut agb::display::GraphicsFrame, world: &World, horizon: i32, cockpit: bool) {
+    let Some((x, y)) = sky_point(world.yaw, MOON_AZIMUTH, MOON_ELEV, horizon) else {
+        return;
+    };
+    // The tube clips the disc. Craters are gone; it is one hot phosphor spot.
+    show_sky(
+        frame,
+        sprites::MOON.sprite(0),
+        x - 16,
+        y - 16,
+        32,
+        32,
+        cockpit,
+        horizon,
+        nvg_lamp(),
+    );
+}
+
+/// Sixteen fixed lights. A few of the dim ones blink, so the field is not a stamp.
+fn draw_stars(frame: &mut agb::display::GraphicsFrame, world: &World, horizon: i32, cockpit: bool) {
+    // Headings stay inside the forward glass on a northbound run. A few sit
+    // higher, so they only come in when the nose comes up.
+    const STARS: [(i32, i32); 16] = [
+        (4, 12),
+        (14, 26),
+        (24, 16),
+        (34, 32),
+        (44, 20),
+        (252, 18),
+        (242, 30),
+        (232, 14),
+        (222, 28),
+        (212, 22),
+        (8, 36),
+        (248, 34),
+        (18, 10),
+        (238, 12),
+        (30, 40),
+        (226, 38),
+    ];
+    for (index, (azimuth, elev)) in STARS.into_iter().enumerate() {
+        let dim = index % 3 != 0;
+        if dim && hash(world.age >> 4, index as i32) % 6 == 0 {
+            continue;
+        }
+        let Some((x, y)) = sky_point(world.yaw, azimuth, elev, horizon) else {
+            continue;
+        };
+        let frame_i = if dim { 0 } else { 1 };
+        show_sky(
+            frame,
+            sprites::STAR.sprite(frame_i),
+            x - 4,
+            y - 4,
+            8,
+            8,
+            cockpit,
+            horizon,
+            nvg_lamp(),
+        );
+    }
+}
+
+/// Lens wash on the glass, in front of the field. The moon does it properly.
+/// The sun only flashes if you put it on the crosshair.
+fn draw_glass_glare(
+    frame: &mut agb::display::GraphicsFrame,
+    world: &World,
+    horizon: i32,
+    sensor: Sensor,
+) {
+    let lamp = match sensor {
+        Sensor::Night => nvg_lamp(),
+        Sensor::Day | Sensor::Heat | Sensor::Ir => None,
+    };
+    let (azimuth, elev, reach, hard) = match sensor {
+        Sensor::Night => (MOON_AZIMUTH, MOON_ELEV, 40, 26),
+        Sensor::Day => (SUN_AZIMUTH, SUN_ELEV, 16, 10),
+        Sensor::Heat | Sensor::Ir => return,
+    };
+    let Some((x, y)) = sky_point(world.yaw, azimuth, elev, horizon) else {
+        return;
+    };
+    let cx = VIEW_X + VIEW_W / 2;
+    let cy = VIEW_Y + VIEW_H / 2;
+    let dx = x - cx;
+    let dy = y - cy;
+    let dist = dx * dx + dy * dy;
+    if dist < hard * hard {
+        // A modest white disc. The flash art is a hard circle, so this stays small.
+        show_veil(frame, x, y, 2, lamp.clone());
+    } else if dist < reach * reach {
+        show_veil(frame, x, y, 4, lamp.clone());
+    } else {
+        return;
+    }
+    if !matches!(sensor, Sensor::Night) {
+        return;
+    }
+    // One ghost across the glass, on the line from the moon through the sight.
+    // It sits on the picture, including over the ground, so it is not a sky sprite.
+    let gx = cx + (cx - x) / 2 - 4;
+    let gy = cy + (cy - y) / 2 - 4;
+    if gx >= VIEW_X && gy >= VIEW_Y && gx + 8 <= VIEW_X + VIEW_W && gy + 8 <= VIEW_Y + VIEW_H {
+        let mut ghost = Object::new(SpriteVram::from(sprites::STAR.sprite(1)));
+        if let Some(palette) = lamp {
+            ghost.set_palette(palette);
+        }
+        ghost
+            .set_pos((gx, gy))
+            .set_priority(Priority::P0)
+            .set_graphics_mode(GraphicsMode::AlphaBlending)
+            .show(frame);
+    }
+}
+
+fn show_veil(
+    frame: &mut agb::display::GraphicsFrame,
+    cx: i32,
+    cy: i32,
+    denom: i32,
+    tint: Option<PaletteVram>,
+) {
+    // Inverse scale: denom 2 draws the 64 circle at 32px, in the top-left of the box.
+    let vis = 64 / denom;
+    let x = cx - vis / 2;
+    let y = cy - vis / 2;
+    if x < VIEW_X || y < VIEW_Y || x + 64 > VIEW_X + VIEW_W || y + 64 > VIEW_Y + VIEW_H {
+        return;
+    }
+    let inv = Num::<i32, 8>::new(denom);
+    let mut veil = ObjectAffine::new(
+        SpriteVram::from(sprites::FLASH.sprite(0)),
+        AffineMatrix::from_scale(vec2(inv, inv)).into(),
+        AffineMode::Affine,
+    );
+    if let Some(palette) = tint {
+        veil.set_palette(palette);
+    }
+    veil.set_pos((x, y))
+        .set_priority(Priority::P0)
+        .set_graphics_mode(GraphicsMode::AlphaBlending)
+        .show(frame);
+}
+
+fn show_sky(
+    frame: &mut agb::display::GraphicsFrame,
+    sprite: &'static Sprite,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    cockpit: bool,
+    horizon: i32,
+    tint: Option<PaletteVram>,
+) {
+    if y + h / 2 > horizon || x > WIDTH || y > HEIGHT || x + w < 0 || y + h < 0 {
+        return;
+    }
+    // The whole sprite stays inside the glass. A disc on the bezel paints over the instruments.
+    if cockpit && (x < VIEW_X || y < VIEW_Y || x + w > VIEW_X + VIEW_W || y + h > VIEW_Y + VIEW_H)
+    {
+        return;
+    }
+    let mut object = Object::new(SpriteVram::from(sprite));
+    if let Some(palette) = tint {
+        object.set_palette(palette);
+    }
+    object.set_pos((x, y)).set_priority(Priority::P0).show(frame);
 }
 
 fn draw_skyline(frame: &mut agb::display::GraphicsFrame, scroll: i32, sky_h: i32, cockpit: bool) {
@@ -1564,6 +1797,20 @@ fn dead_soldier() -> Soldier {
     }
 }
 
+/// Frames from the mark until the first rocket.
+const GUIDE_WAIT: i16 = 240;
+
+/// 0 on the first card, 16 on the last. Early guns wait and hit lighter.
+fn heat(level: u8) -> i32 {
+    (level % LEVEL_COUNT) as i32 * 16 / 21
+}
+
+/// How fast a rush or a push walks north. 24 on the first card, 40 on the
+/// last. A flat 48 reached the line before a bad mark could be corrected.
+fn rush_step(level: u8) -> i32 {
+    24 + heat(level)
+}
+
 /// Facing stays in `dir`. The step is a crawl so a mark cannot leave the radio.
 fn ground_step(dir: i32) -> i32 {
     if dir > 0 {
@@ -1613,7 +1860,14 @@ impl World {
             pad_x: start_x,
             pad_y: start_y,
             pad_alt: start_alt,
-            drones: if mode == Mode::Fpv { 4 } else { 0 },
+            drones: match task {
+                // Pairs share one blast, so six frames is two misses.
+                Task::Fpv => 6,
+                // Four nests, one spare. The dart keeps a single spare.
+                Task::Nest => 5,
+                Task::Dart => 4,
+                _ => 0,
+            },
             vx: 0,
             vy: 0,
             yaw: num!(0),
@@ -1665,6 +1919,10 @@ impl World {
             salvo_cd: 0,
             mark_x: 0,
             mark_y: 0,
+            guide_cx: i32::MIN,
+            guide_cy: i32::MIN,
+            guide_frame_n: 0,
+            guide_frame: [(0, 0, 0); 16],
             bloom: 0,
             sfx: 0,
             shots: [dead_shot(); MAX_SHOTS],
@@ -2536,7 +2794,8 @@ impl World {
             let (nx, ny, _) = self.sight_aim(sin_r, cos_r);
             self.mark_x = nx;
             self.mark_y = ny;
-            self.guide = 240;
+            self.lay_ground_frame(nx, ny);
+            self.guide = GUIDE_WAIT;
             self.sfx |= SFX_MARK;
         }
         if self.guide > 0 {
@@ -2564,6 +2823,59 @@ impl World {
                 self.explode(bg, self.mark_x + jitter_x, self.mark_y + jitter_y, 22, 0, KIND_BOMB);
                 self.salvo -= 1;
                 self.salvo_cd = 8;
+            }
+        }
+        if self.guide == 0 && self.salvo == 0 && self.signal_loss() < 16 && !self.falling {
+            let (sin_r, cos_r) = self.heading();
+            let (nx, ny, _) = self.sight_aim(sin_r, cos_r);
+            self.lay_ground_frame(nx, ny);
+        }
+    }
+
+    /// A square of lip tiles on the map, around the ground under the crosshair.
+    /// It stays in the world when the glass moves. Camera brackets do not.
+    fn lay_ground_frame(&mut self, x: i32, y: i32) {
+        let cx = tile_of(x);
+        let cy = tile_of(y);
+        if self.guide_frame_n > 0 && self.guide_cx == cx && self.guide_cy == cy {
+            return;
+        }
+        self.clear_ground_frame();
+        self.guide_cx = cx;
+        self.guide_cy = cy;
+        let mut n = 0;
+        for dy in -2i32..=2 {
+            for dx in -2i32..=2 {
+                if dx.abs() != 2 && dy.abs() != 2 {
+                    continue;
+                }
+                let tx = cx + dx;
+                let ty = cy + dy;
+                if self.ground_at(tx, ty) == T_WATER {
+                    continue;
+                }
+                let was = self.ground_at(tx, ty);
+                self.guide_frame[n] = (tx, ty, was);
+                n += 1;
+                if was != T_LIP {
+                    self.insert_mark(tx, ty, T_LIP, false);
+                    self.blit(tx, ty);
+                }
+            }
+        }
+        self.guide_frame_n = n as u8;
+    }
+
+    fn clear_ground_frame(&mut self) {
+        let n = self.guide_frame_n as usize;
+        self.guide_frame_n = 0;
+        self.guide_cx = i32::MIN;
+        self.guide_cy = i32::MIN;
+        for step in 0..n {
+            let (tx, ty, was) = self.guide_frame[step];
+            if self.ground_at(tx, ty) == T_LIP && was != T_LIP {
+                self.insert_mark(tx, ty, was, false);
+                self.blit(tx, ty);
             }
         }
     }
@@ -2656,7 +2968,7 @@ impl World {
         let sp = self.pitch.sin().to_raw();
         let cp = self.pitch.cos().to_raw().max(0);
         // The spotter holds one height and loiters. Pitch only aims the glass.
-        let cruise = if self.mode == Mode::Guide { 80 } else { 400 };
+        let cruise = if self.mode == Mode::Guide { 48 } else { 400 };
         let horiz = if self.mode == Mode::Guide {
             cruise
         } else {
@@ -2858,7 +3170,8 @@ impl World {
     }
 
     fn wear(&mut self) {
-        if self.age % 48 == 0 && self.battery > 0 {
+        let span = 64 - heat(self.level);
+        if self.age % span == 0 && self.battery > 0 {
             self.battery -= 1;
         }
         let loss = self.signal_loss();
@@ -2955,23 +3268,18 @@ impl World {
         true
     }
 
-    /// Ground under the fixed crosshair. The tracer stays on that plus.
+    /// Ground under the fixed crosshair. The tracer and the salvo land on that plus.
+    /// Looking up used to clamp the point at 200px and, past the horizon, snap it
+    /// back toward the airframe, so a far group never received the rockets.
     fn sight_aim(&self, sin_r: i32, cos_r: i32) -> (i32, i32, i32) {
         if self.hover {
             return (self.x, self.y, 0);
         }
         let view_cy = VIEW_Y + VIEW_H / 2;
-        let drop = view_cy - self.horizon();
-        if drop < 4 {
-            let lead = 160;
-            return (
-                wrap_coord(self.x + sin_r * lead),
-                wrap_coord(self.y - cos_r * lead),
-                self.alt,
-            );
-        }
+        let drop = (view_cy - self.horizon()).max(4);
         let fwd = (self.alt as i64) * (FOCAL as i64) * (FLOOR_ZOOM as i64) / drop as i64;
-        let lead = (fwd >> 8).clamp(8, 200) as i32;
+        // Ninety tiles. That covers a group by the posts and the ground ahead of it.
+        let lead = (fwd >> 8).clamp(8, 720) as i32;
         (
             wrap_coord(self.x + sin_r * lead),
             wrap_coord(self.y - cos_r * lead),
@@ -3006,24 +3314,55 @@ impl World {
         true
     }
 
-    fn launch_at_player(&mut self, x: i32, y: i32, kind: u8) -> bool {
+    /// A round at the aircraft, not at the crosshair. `slope` is the steepest
+    /// the barrel will lift (rise/run in eighths). Past that the shell keeps
+    /// the low arc and passes under the machine.
+    fn launch_at_player(&mut self, x: i32, y: i32, kind: u8, slope: i32) -> bool {
         let Some(slot) = self.shots.iter_mut().find(|shot| !shot.alive) else {
             return false;
         };
-        // Wide of the drone on purpose: a small high target is hard to hit.
-        let scatter_x = (hash(self.age, x) % 57) as i32 - 28;
-        let scatter_y = (hash(self.age.wrapping_add(9), y) % 57) as i32 - 28;
-        let z_err = ((hash(self.age, x ^ y) % 11) as i32 - 5) << 8;
-        let tx = self.x + (scatter_x << 8);
-        let ty = self.y + (scatter_y << 8);
-        let steps = 22;
+        let scatter_x = (hash(self.age, x) % 9) as i32 - 4;
+        let scatter_y = (hash(self.age.wrapping_add(9), y) % 9) as i32 - 4;
+        let tx = self.x.wrapping_add(scatter_x << 8);
+        let ty = self.y.wrapping_add(scatter_y << 8);
+        let dx = delta(tx, x);
+        let dy = delta(ty, y);
+        let adx = (dx >> 8).abs();
+        let ady = (dy >> 8).abs();
+        let dist = adx.max(ady) + adx.min(ady) / 2;
+        let muzzle = 1 << 8;
+        let rise = self.alt - muzzle;
+        // Overhead: a flat gun has no horizontal run to climb along.
+        let overhead = dist < 10;
+        let steps = if overhead {
+            if slope >= 8 { 16 } else { 10 }
+        } else {
+            (dist / 3).clamp(8, 26)
+        };
+        let vx = dx / steps;
+        let vy = dy / steps;
+        let horiz = (vx.abs().max(vy.abs()) + vx.abs().min(vy.abs()) / 2).max(1);
+        let mut vz = rise / steps + GRAVITY * (steps + 1) / 2;
+        let cap = if overhead && slope < 8 {
+            48
+        } else if overhead {
+            vz.max(48)
+        } else {
+            (horiz * slope / 8).max(48)
+        };
+        if vz > cap {
+            vz = cap;
+        }
+        if vz < 0 {
+            vz = 0;
+        }
         *slot = Shot {
             x,
             y,
-            z: 1 << 8,
-            vx: (tx - x) / steps,
-            vy: (ty - y) / steps,
-            vz: (self.alt + z_err - (1 << 8)) / steps,
+            z: muzzle,
+            vx,
+            vy,
+            vz,
             kind,
             life: 0,
             alive: true,
@@ -3042,13 +3381,15 @@ impl World {
         if low && !inside {
             return;
         }
-        if self.age % 24 == 0 {
-            self.hull -= 3;
+        let heat = heat(self.level);
+        let chip = 1 + heat / 10;
+        if self.age % (44 - heat) == 0 {
+            self.hull -= chip;
             if self.hull < 0 {
                 self.hull = 0;
             }
         }
-        if self.age % 36 == 0 {
+        if self.age % (52 - heat) == 0 {
             let mut best = 0;
             let mut best_d = i32::MAX;
             for (index, gun) in guns.iter().enumerate() {
@@ -3060,8 +3401,21 @@ impl World {
                 }
             }
             let (gx, gy) = gun_at(&guns[best]);
-            let _ = self.launch_at_player(gx, gy, KIND_FLAK);
+            let _ = self.launch_at_player(gx, gy, KIND_FLAK, FLAK_SLOPE);
         }
+    }
+
+    /// Whether this gunner commits. Low cards miss often, and a high pass is
+    /// harder to hit than a deck-level one. The last card fires in range.
+    fn will_shoot(&self, salt: i32, keen: bool) -> bool {
+        let heat = heat(self.level);
+        let roll = (hash(self.age, salt) % 12) as i32;
+        let need = if keen {
+            6 + heat * 6 / 16
+        } else {
+            2 + heat * 5 / 16
+        };
+        roll < need
     }
 
     fn enemy_fire(&mut self) {
@@ -3074,6 +3428,8 @@ impl World {
             return;
         }
         let keen = alt_px <= 7;
+        let pause = (16 - heat(self.level)) * 6;
+        let cool = |base: i32| (base + pause).clamp(1, 255) as u8;
         for index in 0..MAX_SOLDIERS {
             if !self.soldiers[index].alive {
                 continue;
@@ -3087,12 +3443,12 @@ impl World {
             if dist2_px(self.x, self.y, sx, sy) > 40 * 40 {
                 continue;
             }
-            if !keen && hash(self.age, index as i32) % 3 != 0 {
-                self.soldiers[index].cool = 50;
+            if !self.will_shoot(index as i32, keen) {
+                self.soldiers[index].cool = cool(50);
                 continue;
             }
-            self.soldiers[index].cool = 200;
-            let _ = self.launch_at_player(sx, sy, KIND_FLAK);
+            self.soldiers[index].cool = cool(200);
+            let _ = self.launch_at_player(sx, sy, KIND_FLAK, FLAK_SLOPE);
         }
         for index in 0..MAX_TRUCKS {
             if !self.trucks[index].alive {
@@ -3107,12 +3463,12 @@ impl World {
             if dist2_px(self.x, self.y, tx, ty) > 48 * 48 {
                 continue;
             }
-            if !keen && hash(self.age, index as i32 + 19) % 3 != 0 {
-                self.trucks[index].cool = 40;
+            if !self.will_shoot(index as i32 + 19, keen) {
+                self.trucks[index].cool = cool(40);
                 continue;
             }
-            self.trucks[index].cool = 170;
-            let _ = self.launch_at_player(tx, ty, KIND_SHELL);
+            self.trucks[index].cool = cool(170);
+            let _ = self.launch_at_player(tx, ty, KIND_SHELL, TANK_SLOPE);
         }
         for index in 0..MAX_TANKS {
             if !self.tanks[index].alive {
@@ -3127,12 +3483,12 @@ impl World {
             if dist2_px(self.x, self.y, tx, ty) > 56 * 56 {
                 continue;
             }
-            if !keen && hash(self.age, index as i32 + 31) % 3 != 0 {
-                self.tanks[index].cool = 40;
+            if !self.will_shoot(index as i32 + 31, keen) {
+                self.tanks[index].cool = cool(40);
                 continue;
             }
-            self.tanks[index].cool = 150;
-            let _ = self.launch_at_player(tx, ty, KIND_SHELL);
+            self.tanks[index].cool = cool(150);
+            let _ = self.launch_at_player(tx, ty, KIND_SHELL, TANK_SLOPE);
         }
         for index in 0..MAX_BUNKERS {
             if !self.bunkers[index].alive {
@@ -3147,12 +3503,12 @@ impl World {
             if dist2_px(self.x, self.y, bx, by) > 64 * 64 {
                 continue;
             }
-            if !keen && hash(self.age, index as i32 + 47) % 2 != 0 {
-                self.bunkers[index].cool = 24;
+            if !self.will_shoot(index as i32 + 47, keen) {
+                self.bunkers[index].cool = cool(36);
                 continue;
             }
-            self.bunkers[index].cool = 70;
-            let _ = self.launch_at_player(bx, by, KIND_FLAK);
+            self.bunkers[index].cool = cool(110);
+            let _ = self.launch_at_player(bx, by, KIND_FLAK, FLAK_SLOPE);
         }
     }
 
@@ -3322,6 +3678,7 @@ impl World {
 
     fn step_flak(&mut self, index: usize) {
         let kind = self.shots[index].kind;
+        self.shots[index].vz -= GRAVITY;
         self.shots[index].x = wrap_coord(self.shots[index].x + self.shots[index].vx);
         self.shots[index].y = wrap_coord(self.shots[index].y + self.shots[index].vy);
         self.shots[index].z += self.shots[index].vz;
@@ -3334,7 +3691,13 @@ impl World {
         let level = (z - self.alt).abs() <= 4 << 8;
         if near && level {
             self.shots[index].alive = false;
-            self.hull -= if kind == KIND_SHELL { 8 } else { 4 };
+            let heat = heat(self.level);
+            let hit = if kind == KIND_SHELL {
+                4 + heat / 4
+            } else {
+                2 + heat / 8
+            };
+            self.hull -= hit;
             if self.hull < 0 {
                 self.hull = 0;
             }
@@ -3386,7 +3749,7 @@ impl World {
                 continue;
             }
             if self.trucks[index].objective && matches!(task_of(self.level), Task::Push) {
-                self.trucks[index].y -= 48;
+                self.trucks[index].y -= rush_step(self.level);
                 continue;
             }
             let step = ground_step(self.trucks[index].dir);
@@ -3455,7 +3818,7 @@ impl World {
             if self.soldiers[index].objective
                 && matches!(task_of(self.level), Task::Rush | Task::Push)
             {
-                self.soldiers[index].y -= 48;
+                self.soldiers[index].y -= rush_step(self.level);
                 self.soldiers[index].step = self.soldiers[index].step.wrapping_add(1);
                 continue;
             }
@@ -3991,6 +4354,30 @@ fn project(
     Some((sx, sy))
 }
 
+/// Top of the ground window. Above this the floor background is not on.
+fn ground_line(horizon: i32, alt: i32, cockpit: bool) -> i32 {
+    let floor = sky_bottom(horizon, alt);
+    if cockpit {
+        floor.clamp(VIEW_Y, VIEW_Y + VIEW_H)
+    } else {
+        floor.max(0)
+    }
+}
+
+/// The figure stays off the glass unless its roof is on the scanlines that
+/// draw the ground. The life pips sit higher, so they are checked on their own.
+fn body_on_ground(sy: i32, body: i32, art_row: i32, ground_y: i32, cockpit: bool) -> bool {
+    if cockpit && ground_y <= VIEW_Y {
+        return true;
+    }
+    let top = sy - body / 2 - 16 + art_row * body / 32;
+    top >= ground_y
+}
+
+fn marks_on_ground(sy: i32, ground_y: i32, cockpit: bool) -> bool {
+    cockpit && ground_y <= VIEW_Y || sy - 26 >= ground_y
+}
+
 fn sprite_pixels(drop: i32, alt: i32, world_h: i32, min_px: i32, max_px: i32) -> i32 {
     let scale = nadir_on();
     if scale > 0 {
@@ -3998,6 +4385,15 @@ fn sprite_pixels(drop: i32, alt: i32, world_h: i32, min_px: i32, max_px: i32) ->
     }
     let alt_px = (alt >> 8).max(1);
     (world_h * drop / (alt_px * FLOOR_ZOOM)).clamp(min_px, max_px)
+}
+
+/// Front, side and rear only. Diagonal headings share the nearer pure side.
+fn level_octant(oct: usize) -> usize {
+    match oct & 7 {
+        1 | 2 | 3 => 2,
+        5 | 6 | 7 => 6,
+        other => other,
+    }
 }
 
 /// Eight headings around the object, then the same eight from a steeper dive.
@@ -4093,6 +4489,8 @@ fn show_soldier(
         .set_pos((x, y))
         .set_priority(Priority::P0)
         .show(frame);
+    // Boots sit on row 26 of the 32 art. The mark is half a body wide.
+    show_shadow(frame, sx, sy, pixels, false, 26, 4);
 }
 
 fn show_truck(
@@ -4115,13 +4513,17 @@ fn show_truck(
     } else {
         (truck.dir.signum(), 0)
     };
-    // Side views stay wheels-down. Straight down uses the plan frames.
+    // The flight camera only uses the level front, side and rear. A three-quarter
+    // frame puts the cab up the screen and the truck looks reared. The plan
+    // sheet is the overhead picture, and only while the horizon is gone.
     let _ = pitch;
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
-    let top = nadir_on() > 0;
-    let frame_index = if top { 8 + oct } else { oct };
+    let top = nadir_on() > 0 && horizon < 12;
+    // Overhead keeps the real heading, including the diagonals. The side
+    // sheet does not: those frames stood the cab up off the wheels.
+    let frame_index = if top { 8 + oct } else { level_octant(oct) };
     let matrix = actor_matrix(inv);
     // Side views sit on their wheels. The plan view is centred on the ground point.
     let x = sx - 16;
@@ -4129,18 +4531,23 @@ fn show_truck(
     if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
         return;
     }
-    let mut object = ObjectAffine::new(
-        SpriteVram::from(sprites::TRUCK.sprite(frame_index)),
-        matrix.into(),
-        AffineMode::Affine,
-    );
-    if let Some(palette) = body_palette(sensor) {
-        object.set_palette(palette);
+    let sprite = if top {
+        sprites::TRUCK_TOP.sprite(oct)
+    } else {
+        sprites::TRUCK.sprite(frame_index)
+    };
+    let mut object = ObjectAffine::new(SpriteVram::from(sprite), matrix.into(), AffineMode::Affine);
+    // The plan keeps its own colours. The shared night palette would hide the shape.
+    if !top {
+        if let Some(palette) = body_palette(sensor) {
+            object.set_palette(palette);
+        }
     }
     object
         .set_pos((x, y))
         .set_priority(Priority::P0)
         .show(frame);
+    show_shadow(frame, sx, sy, pixels, top, 25, 5);
 }
 
 fn show_tank(
@@ -4165,26 +4572,30 @@ fn show_tank(
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
-    let top = nadir_on() > 0;
-    let frame_index = if top { 8 + oct } else { oct };
+    let top = nadir_on() > 0 && horizon < 12;
+    let frame_index = if top { 8 + oct } else { level_octant(oct) };
     let matrix = actor_matrix(inv);
     let x = sx - 16;
     let y = if top { sy - 16 } else { sy - pixels / 2 - 16 };
     if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
         return;
     }
-    let mut object = ObjectAffine::new(
-        SpriteVram::from(sprites::TANK.sprite(frame_index)),
-        matrix.into(),
-        AffineMode::Affine,
-    );
-    if let Some(palette) = body_palette(sensor) {
-        object.set_palette(palette);
+    let sprite = if top {
+        sprites::TANK_TOP.sprite(oct)
+    } else {
+        sprites::TANK.sprite(frame_index)
+    };
+    let mut object = ObjectAffine::new(SpriteVram::from(sprite), matrix.into(), AffineMode::Affine);
+    if !top {
+        if let Some(palette) = body_palette(sensor) {
+            object.set_palette(palette);
+        }
     }
     object
         .set_pos((x, y))
         .set_priority(Priority::P0)
         .show(frame);
+    show_shadow(frame, sx, sy, pixels, top, 25, 7);
 }
 
 fn show_bunker(
@@ -4213,7 +4624,7 @@ fn show_bunker(
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
-    let top = nadir_on() > 0;
+    let top = nadir_on() > 0 && horizon < 12;
     let frame_index = if top { 8 + oct } else { oct };
     let matrix = actor_matrix(inv);
     let x = sx - 16;
@@ -4221,18 +4632,61 @@ fn show_bunker(
     if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
         return;
     }
-    let mut object = ObjectAffine::new(
-        SpriteVram::from(sprites::BUNKER.sprite(frame_index)),
-        matrix.into(),
-        AffineMode::Affine,
-    );
-    if let Some(palette) = body_palette(sensor) {
-        object.set_palette(palette);
+    let sprite = if top {
+        sprites::BUNKER_TOP.sprite(oct)
+    } else {
+        sprites::BUNKER.sprite(frame_index)
+    };
+    let mut object = ObjectAffine::new(SpriteVram::from(sprite), matrix.into(), AffineMode::Affine);
+    if !top {
+        if let Some(palette) = body_palette(sensor) {
+            object.set_palette(palette);
+        }
     }
     object
         .set_pos((x, y))
         .set_priority(Priority::P0)
         .show(frame);
+    show_shadow(frame, sx, sy, pixels, top, 25, 6);
+}
+
+/// Flat contact mark on the feet. Sonic Battle and Metroid keep a solid oval
+/// under the stance and draw the body over it. A cast to the corner of the
+/// screen slides off the wheels as soon as the nose turns, so this one stays
+/// on the baseline. `span` is the width in eighths of the body.
+fn show_shadow(
+    frame: &mut agb::display::GraphicsFrame,
+    sx: i32,
+    sy: i32,
+    body: i32,
+    top: bool,
+    baseline: i32,
+    span: i32,
+) {
+    // Straight down, the plan already covers the ground it stands on.
+    if top {
+        return;
+    }
+    let origin_y = sy - body / 2 - 16;
+    let cx = sx - 16 + body / 2;
+    let foot = origin_y + baseline * body / 32;
+    let w = (body * span / 8).clamp(6, 22);
+    let h = (w / 3).clamp(3, 5);
+    let inv_x = Num::<i32, 8>::new(32) / Num::new(w);
+    let inv_y = Num::<i32, 8>::new(16) / Num::new(h);
+    let x = cx - w / 2;
+    let y = foot - h / 2;
+    if x < -32 || y < -16 || x > WIDTH || y > HEIGHT {
+        return;
+    }
+    ObjectAffine::new(
+        SpriteVram::from(sprites::SHADOW.sprite(0)),
+        AffineMatrix::from_scale(vec2(inv_x, inv_y)).into(),
+        AffineMode::Affine,
+    )
+    .set_pos((x, y))
+    .set_priority(Priority::P0)
+    .show(frame);
 }
 
 /// Three red pips. They shrink as the target is hit.
@@ -4434,52 +4888,6 @@ fn draw_guide_glass(
     let nx = (view_cx + right * 36 / mag - 4).clamp(VIEW_X + 16, VIEW_X + VIEW_W - 24);
     let ny = (view_cy - fwd * 36 / mag - 4).clamp(VIEW_Y + 16, VIEW_Y + VIEW_H - 24);
     show(frame, sprites::NORTH.sprite(0), nx, ny);
-
-    let horizon = world.horizon();
-    let floor = sky_bottom(horizon, world.alt);
-    let mut best: Option<(i32, i32)> = None;
-    let mut best_d = 40 * 40;
-    let mut consider = |wx: i32, wy: i32| {
-        let Some((sx, sy)) = project(
-            world.x, world.y, world.alt, sin_r, cos_r, horizon, wx, wy, 0,
-        ) else {
-            return;
-        };
-        // Same test as the vehicle sprite. A far mark still projects along
-        // the look direction, but the box waits until the body is on the glass.
-        if !in_view(sx, sy, true) || sy < floor {
-            return;
-        }
-        let ddx = sx - view_cx;
-        let ddy = sy - view_cy;
-        let d = ddx * ddx + ddy * ddy;
-        if d < best_d {
-            best_d = d;
-            best = Some((sx, sy));
-        }
-    };
-    for truck in &world.trucks {
-        if truck.alive {
-            consider(truck.x, truck.y);
-        }
-    }
-    for tank in &world.tanks {
-        if tank.alive {
-            consider(tank.x, tank.y);
-        }
-    }
-    for soldier in &world.soldiers {
-        if soldier.alive && soldier.objective {
-            consider(soldier.x, soldier.y);
-        }
-    }
-    if let Some((sx, sy)) = best {
-        let s = 12;
-        show_flip(frame, mark, sx - s, sy - s, false, false);
-        show_flip(frame, mark, sx + s - 8, sy - s, true, false);
-        show_flip(frame, mark, sx - s, sy + s - 8, false, true);
-        show_flip(frame, mark, sx + s - 8, sy + s - 8, true, true);
-    }
 }
 
 /// Two thin leads from the lower corners to the mine on the crosshair.
@@ -4765,6 +5173,28 @@ fn ir_body(colour: u16) -> u16 {
     let v = (22 + y / 3).clamp(20, 31) as u16;
     v | (v << 5) | (v << 10)
 }
+
+/// One hot phosphor. Every index of the moon and the stars lands on it, so the
+/// disc blooms instead of keeping its daylight blue.
+fn nvg_lamp() -> Option<PaletteVram> {
+    unsafe {
+        let slot = &mut *NVG_LAMP.0.get();
+        if slot.is_none() {
+            let hot = Rgb::new(40, 248, 48).to_rgb15();
+            let mut colours = [Rgb15(0); 16];
+            for index in 1..16 {
+                colours[index] = hot;
+            }
+            let palette = PaletteVramSingle::try_allocate_new(&Palette16::new(colours)).ok()?;
+            *slot = Some(palette.palette());
+        }
+        slot.clone()
+    }
+}
+
+struct LampHold(core::cell::UnsafeCell<Option<PaletteVram>>);
+unsafe impl Sync for LampHold {}
+static NVG_LAMP: LampHold = LampHold(core::cell::UnsafeCell::new(None));
 
 fn nvg_body(colour: u16) -> u16 {
     let y = luma(colour);
@@ -5133,6 +5563,7 @@ fn draw_world(
     sensor: Sensor,
 ) {
     let floor = sky_bottom(horizon, world.alt);
+    let ground_y = ground_line(horizon, world.alt, cockpit);
     for boom in &world.booms {
         if !boom.alive {
             continue;
@@ -5234,11 +5665,17 @@ fn draw_world(
         if !in_view(sx, sy, cockpit) || sy < floor {
             continue;
         }
-        if soldier.officer {
-            show(frame, sprites::BLIP.sprite(1), sx - 4, sy - 22);
+        let man_px = sprite_pixels((sy - horizon).max(1), world.alt, 16, 12, 28);
+        if !body_on_ground(sy, man_px, 6, ground_y, cockpit) {
+            continue;
         }
-        let man_max = if soldier.officer { HP_OFFICER } else { HP_MAN };
-        show_life(frame, sx, sy, soldier.hp, man_max);
+        if marks_on_ground(sy, ground_y, cockpit) {
+            if soldier.officer {
+                show(frame, sprites::BLIP.sprite(1), sx - 4, sy - 22);
+            }
+            let man_max = if soldier.officer { HP_OFFICER } else { HP_MAN };
+            show_life(frame, sx, sy, soldier.hp, man_max);
+        }
         show_soldier(
             frame,
             soldier,
@@ -5264,7 +5701,13 @@ fn draw_world(
         if !in_view(sx, sy, cockpit) || sy < floor {
             continue;
         }
-        show_life(frame, sx, sy, truck.hp, HP_TRUCK);
+        let truck_px = sprite_pixels((sy - horizon).max(1), world.alt, 20, 16, 32);
+        if !body_on_ground(sy, truck_px, 14, ground_y, cockpit) {
+            continue;
+        }
+        if marks_on_ground(sy, ground_y, cockpit) {
+            show_life(frame, sx, sy, truck.hp, HP_TRUCK);
+        }
         show_truck(
             frame,
             truck,
@@ -5290,7 +5733,13 @@ fn draw_world(
         if !in_view(sx, sy, cockpit) || sy < floor {
             continue;
         }
-        show_life(frame, sx, sy, tank.hp, HP_TANK);
+        let tank_px = sprite_pixels((sy - horizon).max(1), world.alt, 22, 18, 34);
+        if !body_on_ground(sy, tank_px, 11, ground_y, cockpit) {
+            continue;
+        }
+        if marks_on_ground(sy, ground_y, cockpit) {
+            show_life(frame, sx, sy, tank.hp, HP_TANK);
+        }
         show_tank(
             frame,
             tank,
@@ -5315,7 +5764,13 @@ fn draw_world(
         if !in_view(sx, sy, cockpit) || sy < floor {
             continue;
         }
-        show_life(frame, sx, sy, bunker.hp, HP_BUNKER);
+        let bunker_px = sprite_pixels((sy - horizon).max(1), world.alt, 18, 14, 30);
+        if !body_on_ground(sy, bunker_px, 8, ground_y, cockpit) {
+            continue;
+        }
+        if marks_on_ground(sy, ground_y, cockpit) {
+            show_life(frame, sx, sy, bunker.hp, HP_BUNKER);
+        }
         show_bunker(
             frame,
             bunker,
@@ -5461,6 +5916,10 @@ fn draw_aa_guns(
             continue;
         };
         if cockpit && (!in_view(sx, sy, true) || sy < floor) {
+            continue;
+        }
+        let gun_px = sprite_pixels((sy - horizon).max(1), world.alt, 18, 14, 30);
+        if !body_on_ground(sy, gun_px, 8, ground_line(horizon, world.alt, cockpit), cockpit) {
             continue;
         }
         let bunker = Bunker {
