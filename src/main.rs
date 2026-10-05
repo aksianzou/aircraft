@@ -37,6 +37,7 @@ include_aseprite!(
     "gfx/bomb.png",
     "gfx/he.png",
     "gfx/mine.png",
+    "gfx/vog.png",
     16x16 "gfx/boom.png",
     32x32 "gfx/truck.png",
     32x32 "gfx/tank.png",
@@ -47,6 +48,7 @@ include_aseprite!(
     "gfx/lbl_bomb.png",
     "gfx/lbl_he.png",
     "gfx/lbl_mine.png",
+    "gfx/lbl_vog.png",
     "gfx/lbl_alt.png",
     "gfx/lbl_drone.png",
     "gfx/title.png",
@@ -172,6 +174,7 @@ const T_ROAD: u8 = 4;
 const T_WATER: u8 = 5;
 const T_TREE: u8 = 6;
 const T_CRATER: u8 = 7;
+/// Parked with the sheet. The mortar round is a sprite and bursts when it lands.
 const T_MINE: u8 = 8;
 const T_TRENCH: u8 = 9;
 const T_LIP: u8 = 10;
@@ -189,15 +192,34 @@ const AA_CEIL: i32 = 15;
 
 const KIND_BOMB: u8 = 0;
 const KIND_HE: u8 = 1;
+/// Mortar round. A tank dies when any charge but a bullet lands in the hatch.
 const KIND_MINE: u8 = 2;
 const KIND_GUN: u8 = 3;
 const KIND_FLAK: u8 = 4;
 const KIND_SHELL: u8 = 5;
+/// Underbarrel grenade. Infantry only.
+const KIND_VOG: u8 = 6;
 
 const ARM_GUN: u8 = 0;
 const ARM_BOMB: u8 = 1;
 const ARM_HE: u8 = 2;
 const ARM_MINE: u8 = 3;
+const ARM_VOG: u8 = 4;
+/// World pixels from the turret centre. The hatch is the dark square in the top view.
+const HATCH: i32 = 6;
+/// Beside the hull. Wide enough that a normal bomb drop counts.
+const TANK_NEAR: i32 = 28;
+/// Bombs beside the hull that finish a tank. The hatch is still one shot.
+const BOMB_HULL_HITS: i8 = 3;
+
+/// How many blasts beside the hull finish a full tank. Zero leaves the hull alone.
+fn hull_hits(kind: u8) -> i8 {
+    match kind {
+        KIND_BOMB => BOMB_HULL_HITS,
+        KIND_MINE => 2,
+        _ => 0,
+    }
+}
 
 const HP_MAN: i8 = 8;
 const HP_OFFICER: i8 = 12;
@@ -351,7 +373,7 @@ struct Mine {
     alive: bool,
 }
 
-/// A charge sitting on the grass. The quad can hold one of these.
+/// One mortar round lying in the grass. The quad can carry a single one.
 #[derive(Clone, Copy)]
 struct Cache {
     x: i32,
@@ -459,6 +481,10 @@ struct World {
     bombs: i32,
     he: i32,
     mines: i32,
+    vog: i32,
+    /// How long the quad stick has been held, and which way. Speed grows with it.
+    stick_hold: i16,
+    stick_key: i8,
     /// What B fires. A steps to the next one.
     arm: u8,
     /// Airframe, 0..=100. A close blast spends it.
@@ -479,7 +505,7 @@ struct World {
     falling: bool,
     /// Quad only. Holds height, looks straight down, and the stick slides.
     hover: bool,
-    /// The one charge a small quad can carry. Fetch missions only.
+    /// The one mortar round a small quad can carry. Fetch missions only.
     cargo: bool,
     caches: [Cache; 3],
     /// Frames until the marked salvo. Zero means the sight is free.
@@ -1441,12 +1467,21 @@ fn dead_cache() -> Cache {
     }
 }
 
-/// Three charges. The later card sits farther from the pad, still inside the radio.
+/// Rounds to pick up. The later card keeps them farther from the pad.
 fn cache_spots(level: u8) -> [(i32, i32); 3] {
     if level % LEVEL_COUNT == 21 {
-        [(8, 62), (40, 58), (24, 44)]
+        [(14, 78), (34, 76), (24, 70)]
     } else {
-        [(16, 74), (32, 70), (24, 58)]
+        [(18, 82), (30, 82), (24, 76)]
+    }
+}
+
+/// Where those rounds have to land. The trucks stay put.
+fn mortar_spots(level: u8) -> [(i32, i32); 3] {
+    if level % LEVEL_COUNT == 21 {
+        [(10, 40), (24, 34), (40, 42)]
+    } else {
+        [(16, 52), (26, 46), (36, 50)]
     }
 }
 
@@ -1587,6 +1622,9 @@ impl World {
             bombs: if bare { 0 } else { 40 },
             he: if bare { 0 } else { 8 },
             mines: if bare { 0 } else { 8 },
+            vog: if bare { 0 } else { 16 },
+            stick_hold: 0,
+            stick_key: 0,
             arm: if mode == Mode::Fpv {
                 ARM_GUN
             } else if fetch {
@@ -1927,6 +1965,20 @@ impl World {
                         alive: true,
                     };
                 }
+                for (index, (tx, ty)) in mortar_spots(self.level).into_iter().enumerate() {
+                    self.tanks[index] = Tank {
+                        x: (tx * 8 + 4) << 8,
+                        y: (ty * 8 + 4) << 8,
+                        dir: 0,
+                        vertical: false,
+                        home_tx: tx,
+                        home_ty: ty,
+                        objective: true,
+                        hp: HP_TANK,
+                        cool: 40,
+                        alive: true,
+                    };
+                }
             }
             Task::Skirt => {
                 let spots = [(14, 24), (24, 22), (32, 24)];
@@ -1973,7 +2025,9 @@ impl World {
     }
 
     fn claim_armor(&mut self) {
-        if matches!(task_of(self.level), Task::Armor | Task::Flare) && self.targets > 0 {
+        if matches!(task_of(self.level), Task::Armor | Task::Flare | Task::Fetch)
+            && self.targets > 0
+        {
             self.targets -= 1;
             self.sfx |= SFX_MARK;
         }
@@ -1986,8 +2040,23 @@ impl World {
         }
     }
 
-    /// Hover over a charge and take it. Hover over the pad and put it down.
-    /// The quad holds one. Setting it down anywhere else leaves it on the grass.
+    /// Hold time, not the glass, sets how fast the quad slides.
+    fn quad_creep(&mut self, pitch_in: Tri, yaw_in: Tri) -> i32 {
+        let along = -tri_value(pitch_in);
+        let strafe = tri_value(yaw_in);
+        let key = (along + strafe * 3) as i8;
+        if key == 0 || key != self.stick_key {
+            self.stick_hold = 0;
+            self.stick_key = key;
+        }
+        if key != 0 && self.stick_hold < 200 {
+            self.stick_hold += 2;
+        }
+        16 + self.stick_hold as i32
+    }
+
+    /// One mortar round at a time. B over a round takes it. B again drops it
+    /// into the hatch.
     fn fetch_tick(&mut self, input: &ButtonController) {
         self.arm = ARM_MINE;
         self.mines = if self.cargo { 1 } else { 0 };
@@ -1995,18 +2064,8 @@ impl World {
             return;
         }
         if self.cargo {
-            if dist2_px(self.x, self.y, self.pad_x, self.pad_y) <= 18 * 18 {
+            if self.try_shot(KIND_MINE) {
                 self.cargo = false;
-                if self.targets > 0 {
-                    self.targets -= 1;
-                    self.sfx |= SFX_MARK;
-                }
-            } else if let Some(slot) = self.caches.iter().position(|cache| !cache.alive) {
-                self.caches[slot].x = self.x;
-                self.caches[slot].y = self.y;
-                self.caches[slot].alive = true;
-                self.cargo = false;
-                self.sfx |= SFX_MARK;
             }
             return;
         }
@@ -2116,7 +2175,7 @@ impl World {
 
     /// Keep every ground tile in VRAM. The 64×64 loader is not what is shown.
     fn park(&mut self, bg: &mut AffineBackground) {
-        let last = T_FOG as u16 + 7;
+        let last = (T_FOG as u16 + 7).max(T_MINE as u16);
         for tile in (T_SKY as u16)..=last {
             bg.set_tile((tile as i32, 0), &backgrounds::TERRAIN.tiles, tile);
         }
@@ -2428,7 +2487,7 @@ impl World {
             && self.signal_loss() < 16
         {
             if input.is_just_pressed(Button::A) {
-                self.arm = (self.arm + 1) % 4;
+                self.arm = (self.arm + 1) % 5;
             }
             if self.fire_cd > 0 {
                 self.fire_cd -= 1;
@@ -2445,6 +2504,8 @@ impl World {
                 self.he -= 1;
             } else if arm == ARM_MINE && once && self.mines > 0 && self.try_shot(KIND_MINE) {
                 self.mines -= 1;
+            } else if arm == ARM_VOG && once && self.vog > 0 && self.try_shot(KIND_VOG) {
+                self.vog -= 1;
             }
         }
         if self.mode == Mode::Guide {
@@ -2452,7 +2513,6 @@ impl World {
         }
 
         self.update_shots(bg);
-        self.update_mines(bg);
         self.update_trucks();
         self.update_tanks();
         self.check_convoy();
@@ -2501,7 +2561,7 @@ impl World {
                 } else {
                     ((hash(self.age, n + 5) % 33) as i32 - 16) << 8
                 };
-                self.explode(bg, self.mark_x + jitter_x, self.mark_y + jitter_y, 22, 0);
+                self.explode(bg, self.mark_x + jitter_x, self.mark_y + jitter_y, 22, 0, KIND_BOMB);
                 self.salvo -= 1;
                 self.salvo_cd = 8;
             }
@@ -2529,19 +2589,22 @@ impl World {
             input.x_tri()
         };
         // A dead link or a fall drops the hover. Select on the quad switches it.
+        let fetch = matches!(task_of(self.level), Task::Fetch);
         if self.mode != Mode::Quad || self.falling || loss >= 16 {
             self.hover = false;
-        } else if matches!(task_of(self.level), Task::Fetch) {
-            // This airframe only hovers. Select does not turn it into a plane.
-            self.hover = true;
-        } else if input.is_just_pressed(Button::Select) {
+        } else if fetch && input.is_just_pressed(Button::Select) {
+            // The quad keeps the same slide. Select only swaps the glass.
+            self.hover = !self.hover;
+            self.sfx |= SFX_MARK;
+        } else if !fetch && input.is_just_pressed(Button::Select) {
             self.hover = !self.hover;
             self.sfx |= SFX_MARK;
         }
 
         // About a second from level to a steep dive. Releasing the stick does
         // not snap the nose back. Hover keeps the nose so leaving it is the same attitude.
-        if !self.hover {
+        let fetch_fly = fetch && !self.falling && loss < 16;
+        if !self.hover && !fetch_fly {
             self.pitch += Num::new(tri_value(pitch_in)) / Num::new(240);
         }
         if self.falling {
@@ -2553,7 +2616,7 @@ impl World {
         if self.pitch < num!(-0.12) {
             self.pitch = num!(-0.12);
         }
-        let yaw_step = if self.hover {
+        let yaw_step = if self.hover || fetch_fly {
             Num::new(0)
         } else {
             Num::new(tri_value(yaw_in)) / Num::new(160)
@@ -2562,7 +2625,7 @@ impl World {
         wrap_yaw(&mut self.yaw);
         // The airframe does not roll. The indicator leans into the turn and
         // settles back when the stick is released.
-        if !self.hover {
+        if !self.hover && !fetch_fly {
             let want = yaw_step * Num::new(14);
             self.bank += (want - self.bank) / Num::new(6);
             if self.bank > num!(0.06) {
@@ -2574,11 +2637,11 @@ impl World {
         }
 
         let (sin_r, cos_r) = self.heading();
-        if self.hover {
-            // The glass stays down. The stick creeps over the point instead of flying.
-            // A fetch quad crosses the field; a strike quad only creeps onto a hatch.
-            let creep = if matches!(task_of(self.level), Task::Fetch) {
-                220
+        if self.hover || fetch_fly {
+            // The stick slides the quad. Looking down does not change that speed.
+            // Holding a direction speeds it up. A tap stays slow enough for a hatch.
+            let creep = if fetch_fly {
+                self.quad_creep(pitch_in, yaw_in)
             } else {
                 48
             };
@@ -2625,7 +2688,7 @@ impl World {
                 self.alt = 0;
             }
             if self.mode == Mode::Fpv {
-                self.explode(bg, self.x, self.y, 48, 0);
+                self.explode(bg, self.x, self.y, 48, 0, KIND_BOMB);
             } else if touching {
                 let _ = self.strike_at(bg, self.x, self.y);
             } else {
@@ -3307,58 +3370,13 @@ impl World {
             }
             let shot = self.shots[index];
             self.shots[index].alive = false;
-            if shot.kind == KIND_MINE {
-                self.place_mine(bg, shot.x, shot.y);
-            } else {
-                let radius = if shot.kind == KIND_HE { 22 } else { 14 };
-                self.explode(bg, shot.x, shot.y, radius, 0);
-            }
-        }
-    }
-
-    fn place_mine(&mut self, bg: &mut AffineBackground, x: i32, y: i32) {
-        let Some(slot) = self.mine_list.iter_mut().find(|mine| !mine.alive) else {
-            self.explode(bg, x, y, 22, 0);
-            return;
-        };
-        slot.x = wrap_coord(x);
-        slot.y = wrap_coord(y);
-        slot.arm = 100;
-        slot.alive = true;
-        let tx = tile_of(x);
-        let ty = tile_of(y);
-        let tile = self.ground_at(tx, ty);
-        if matches!(
-            tile,
-            T_FLOOR | T_FLOOR2 | T_GRASS_L | T_GRASS_D | T_TUFT | T_PATCH | T_DIRT | T_ROAD
-            | T_TRENCH | T_LIP
-        ) {
-            self.paint(bg, tx, ty, T_MINE);
-        }
-    }
-
-    fn update_mines(&mut self, bg: &mut AffineBackground) {
-        for index in 0..MAX_MINES {
-            if !self.mine_list[index].alive {
-                continue;
-            }
-            if self.mine_list[index].arm > 0 {
-                self.mine_list[index].arm -= 1;
-                continue;
-            }
-            let mx = self.mine_list[index].x;
-            let my = self.mine_list[index].y;
-            let triggered = self
-                .trucks
-                .iter()
-                .any(|truck| truck.alive && dist2_px(mx, my, truck.x, truck.y) <= 18 * 18)
-                || self.soldiers.iter().any(|soldier| {
-                    soldier.alive && dist2_px(mx, my, soldier.x, soldier.y) <= 16 * 16
-                });
-            if triggered {
-                self.mine_list[index].alive = false;
-                self.explode(bg, mx, my, 26, 0);
-            }
+            let radius = match shot.kind {
+                KIND_HE => 22,
+                KIND_VOG => 12,
+                KIND_MINE => 10,
+                _ => 14,
+            };
+            self.explode(bg, shot.x, shot.y, radius, 0, shot.kind);
         }
     }
 
@@ -3467,7 +3485,7 @@ impl World {
         }
     }
 
-    fn explode(&mut self, bg: &mut AffineBackground, x: i32, y: i32, radius: i32, depth: i32) {
+    fn explode(&mut self, bg: &mut AffineBackground, x: i32, y: i32, radius: i32, depth: i32, kind: u8) {
         self.add_boom(x, y);
         self.damage_tiles(bg, x, y, radius);
         let reach = radius * radius;
@@ -3480,7 +3498,7 @@ impl World {
         let mut obj_men = 0;
         let mut men_hit = 0;
         for truck in &mut self.trucks {
-            if truck.alive && dist2_px(truck.x, truck.y, x, y) <= reach {
+            if kind == KIND_BOMB && truck.alive && dist2_px(truck.x, truck.y, x, y) <= reach {
                 graves[graves_n] = (truck.home_tx, truck.home_ty);
                 graves_n += 1;
                 if truck.goal {
@@ -3494,7 +3512,10 @@ impl World {
             }
         }
         for soldier in &mut self.soldiers {
-            if soldier.alive && dist2_px(soldier.x, soldier.y, x, y) <= reach {
+            if matches!(kind, KIND_VOG | KIND_BOMB | KIND_HE | KIND_MINE)
+                && soldier.alive
+                && dist2_px(soldier.x, soldier.y, x, y) <= reach
+            {
                 graves[graves_n] = (soldier.home_tx, soldier.home_ty);
                 graves_n += 1;
                 if soldier.officer {
@@ -3537,19 +3558,35 @@ impl World {
         let mut wrecks_n = 0;
         let mut armor = 0;
         for tank in &mut self.tanks {
-            if tank.alive && dist2_px(tank.x, tank.y, x, y) <= reach {
-                wrecks[wrecks_n] = (tank.home_tx, tank.home_ty);
-                wrecks_n += 1;
-                if tank.objective {
-                    armor += 1;
-                }
-                tank.alive = false;
-                self.score += 150;
+            if !tank.alive || kind == KIND_GUN {
+                continue;
             }
+            let dist = dist2_px(tank.x, tank.y, x, y);
+            let hatch = dist <= HATCH * HATCH;
+            let hits = hull_hits(kind);
+            let near = hits > 0 && dist <= TANK_NEAR * TANK_NEAR;
+            if !hatch && !near {
+                continue;
+            }
+            if hatch {
+                tank.hp = 0;
+            } else {
+                tank.hp -= HP_TANK / hits;
+            }
+            if tank.hp > 0 {
+                continue;
+            }
+            wrecks[wrecks_n] = (tank.home_tx, tank.home_ty);
+            wrecks_n += 1;
+            if tank.objective {
+                armor += 1;
+            }
+            tank.alive = false;
+            self.score += 150;
         }
         let mut pills = 0;
         for bunker in &mut self.bunkers {
-            if bunker.alive && dist2_px(bunker.x, bunker.y, x, y) <= reach {
+            if kind == KIND_HE && bunker.alive && dist2_px(bunker.x, bunker.y, x, y) <= reach {
                 wrecks[wrecks_n] = (bunker.home_tx, bunker.home_ty);
                 wrecks_n += 1;
                 if bunker.objective {
@@ -3581,7 +3618,7 @@ impl World {
             }
         }
         for step in 0..count {
-            self.explode(bg, chain[step].0, chain[step].1, 24, depth + 1);
+            self.explode(bg, chain[step].0, chain[step].1, 24, depth + 1, KIND_BOMB);
         }
     }
 
@@ -4078,16 +4115,17 @@ fn show_truck(
     } else {
         (truck.dir.signum(), 0)
     };
-    // The high-angle sheets are drawn tilted, so the truck stands on its nose.
-    // Keep the wheels-down views for every camera pitch.
+    // Side views stay wheels-down. Straight down uses the plan frames.
     let _ = pitch;
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
-    let frame_index = heading_octant(fwd, right);
+    let oct = heading_octant(fwd, right);
+    let top = nadir_on() > 0;
+    let frame_index = if top { 8 + oct } else { oct };
     let matrix = actor_matrix(inv);
-    // 32×32 sprite. Wheels sit on the bottom row.
+    // Side views sit on their wheels. The plan view is centred on the ground point.
     let x = sx - 16;
-    let y = sy - pixels / 2 - 16;
+    let y = if top { sy - 16 } else { sy - pixels / 2 - 16 };
     if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
         return;
     }
@@ -4126,10 +4164,12 @@ fn show_tank(
     };
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
-    let frame_index = heading_octant(fwd, right);
+    let oct = heading_octant(fwd, right);
+    let top = nadir_on() > 0;
+    let frame_index = if top { 8 + oct } else { oct };
     let matrix = actor_matrix(inv);
     let x = sx - 16;
-    let y = sy - pixels / 2 - 16;
+    let y = if top { sy - 16 } else { sy - pixels / 2 - 16 };
     if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
         return;
     }
@@ -4172,10 +4212,12 @@ fn show_bunker(
     let (fx, fy) = if fx == 0 && fy == 0 { (0, 1) } else { (fx, fy) };
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
-    let frame_index = heading_octant(fwd, right);
+    let oct = heading_octant(fwd, right);
+    let top = nadir_on() > 0;
+    let frame_index = if top { 8 + oct } else { oct };
     let matrix = actor_matrix(inv);
     let x = sx - 16;
-    let y = sy - pixels / 2 - 16;
+    let y = if top { sy - 16 } else { sy - pixels / 2 - 16 };
     if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
         return;
     }
@@ -4537,14 +4579,16 @@ fn draw_gauges(frame: &mut agb::display::GraphicsFrame, world: &World) {
         ARM_GUN => 0,
         ARM_BOMB => 1,
         ARM_HE => 2,
-        _ => 3,
+        ARM_MINE => 3,
+        _ => 4,
     };
     show(frame, sprites::WEP.sprite(wep), 8, 52);
     let ammo = match world.arm {
         ARM_GUN => None,
         ARM_BOMB => Some(world.bombs),
         ARM_HE => Some(world.he),
-        _ => Some(world.mines),
+        ARM_MINE => Some(world.mines),
+        _ => Some(world.vog),
     };
     if let Some(ammo) = ammo {
         draw_digits(frame, ammo, 2, 8, 70);
@@ -4894,8 +4938,14 @@ fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
         Task::Fpv => nearest_marked(world, pts, true, false),
         Task::Fetch => {
             if world.cargo {
-                pts[0] = (world.pad_x, world.pad_y);
-                1
+                let mut n = 0;
+                for tank in &world.tanks {
+                    if tank.alive && tank.objective && n < 3 {
+                        pts[n] = (tank.x, tank.y);
+                        n += 1;
+                    }
+                }
+                return n;
             } else {
                 let mut n = 0;
                 for cache in &world.caches {
@@ -5061,6 +5111,8 @@ fn draw_hud(frame: &mut agb::display::GraphicsFrame, world: &World) {
         draw_digits(frame, world.he, 2, 88, 8);
         show(frame, sprites::LBL_MINE.sprite(0), 112, 8);
         draw_digits(frame, world.mines, 2, 144, 8);
+        show(frame, sprites::LBL_VOG.sprite(0), 168, 8);
+        draw_digits(frame, world.vog, 2, 200, 8);
     }
     if world.mode == Mode::Fpv {
         show(frame, sprites::LBL_DRONE.sprite(0), 160, 0);
@@ -5132,6 +5184,7 @@ fn draw_world(
         let (sprite, ox) = match shot.kind {
             KIND_HE => (sprites::HE.sprite(0), 4),
             KIND_MINE => (sprites::MINE.sprite(0), 4),
+            KIND_VOG => (sprites::VOG.sprite(0), 4),
             KIND_GUN => (sprites::ROUND.sprite(0), 1),
             KIND_FLAK | KIND_SHELL => (sprites::ROUND.sprite(1), 1),
             _ => (sprites::BOMB.sprite(0), 4),
