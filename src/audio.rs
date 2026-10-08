@@ -6,7 +6,7 @@ use crate::world::*;
 
 /// Menu loop. The recorded melody, a quiet bass, and a soft third under it.
 pub(crate) static MUSIC: SoundData = include_wav!("sfx/music.wav");
-/// End roll. The same key and the same slow step, with more room around it.
+/// End roll. The recorded melody on its own, a little softer.
 pub(crate) static END: SoundData = include_wav!("sfx/end.wav");
 pub(crate) static GUN_SFX: SoundData = include_wav!("sfx/gun.wav");
 pub(crate) static WHISTLE_SFX: SoundData = include_wav!("sfx/whistle.wav");
@@ -86,7 +86,7 @@ pub(crate) fn music_bed(mixer: &mut agb::sound::mixer::Mixer, slot: &mut Option<
     }
 }
 
-/// Credits. Same key as the menu, slower and with more air.
+/// Credits. The melody alone, so nothing sits beside it.
 pub(crate) fn end_bed(mixer: &mut agb::sound::mixer::Mixer, slot: &mut Option<ChannelId>) {
     start_loop(mixer, slot, END, num!(0.55));
 }

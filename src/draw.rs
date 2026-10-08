@@ -458,8 +458,7 @@ pub(crate) fn draw_mist(
 
 pub(crate) fn sky_bottom(horizon: i32, alt: i32) -> i32 {
     let alt_px = (alt >> 8).max(1);
-    // 48 tiles is inside the 60-tile window and short of the 64-tile alias.
-    let skip = (alt_px * FLOOR_ZOOM * 25 / 48).max(12);
+    let skip = (alt_px * FLOOR_ZOOM * 25 / REACH).max(12);
     (horizon + skip).clamp(horizon + 8, HEIGHT).max(0)
 }
 
@@ -1092,35 +1091,49 @@ fn glyph(ch: u8) -> usize {
     }
 }
 
-/// One line, centred. Letters are drawn at their real size, so none are clipped.
-pub(crate) fn show_text(frame: &mut agb::display::GraphicsFrame, text: &[u8], y: i32) {
+/// A role, smaller than the name under it. Same index order as the name face.
+pub(crate) fn show_role(frame: &mut agb::display::GraphicsFrame, text: &[u8], y: i32) {
     let mut width = 0;
     for &ch in text {
-        width += if ch == b' ' { 8 } else { 16 };
+        width += if ch == b' ' { 3 } else { 5 };
     }
     let mut x = (WIDTH - width) / 2;
     for &ch in text {
-        let adv = if ch == b' ' { 8 } else { 16 };
-        if ch != b' ' && (-16..HEIGHT).contains(&y) && (-16..WIDTH).contains(&x) {
-            show(frame, sprites::FONT.sprite(glyph(ch)), x, y);
+        let adv = if ch == b' ' { 3 } else { 5 };
+        if ch != b' ' && (-8..HEIGHT).contains(&y) && (-8..WIDTH).contains(&x) {
+            show(frame, sprites::ROLE.sprite(glyph(ch)), x, y);
         }
         x += adv;
     }
 }
 
-/// Studio card. The marble settles, then the wordmark. The year is already up.
+/// One small line, centred. Every letter is the same 5x7 on the same baseline.
+pub(crate) fn show_small(frame: &mut agb::display::GraphicsFrame, text: &[u8], y: i32) {
+    let mut width = 0;
+    for &ch in text {
+        width += if ch == b' ' { 4 } else { 6 };
+    }
+    let mut x = (WIDTH - width) / 2;
+    for &ch in text {
+        let adv = if ch == b' ' { 4 } else { 6 };
+        if ch != b' ' && (-8..HEIGHT).contains(&y) && (-8..WIDTH).contains(&x) {
+            show(frame, sprites::SMALL.sprite(glyph(ch)), x, y);
+        }
+        x += adv;
+    }
+}
+
+/// Studio card. The stone settles, then the whole lockup, on one centre line.
 pub(crate) fn draw_studio(frame: &mut agb::display::GraphicsFrame, age: i32) {
     let t = age.min(12);
     let dy = (12 - t) * (12 - t) / 8;
-    show(frame, sprites::MARBLE.sprite(0), 104, 6 + dy);
+    show(frame, sprites::MARBLE.sprite(0), 104, 4 + dy);
+    show_small(frame, b"2026", 144);
     if age >= 14 {
-        show_text(frame, b"MARBLE ZOO", 42);
-        show_text(frame, b"games", 60);
+        show_small(frame, b"MARBLE ZOO", 42);
+        show_small(frame, b"games", 52);
+        show(frame, sprites::WORD.sprite(0), 88, 68);
     }
-    if age >= 26 {
-        show_text(frame, b"DRONE", 92);
-    }
-    show_text(frame, b"2026", 136);
 }
 
 /// Quads and one wing, seen from above, drifting behind the roll.
@@ -1142,31 +1155,108 @@ fn draw_credit_craft(frame: &mut agb::display::GraphicsFrame, age: i32) {
     }
 }
 
-/// End roll for the last sortie. Lines rise and then rest.
+struct Person {
+    first: &'static [u8],
+    last: &'static [u8],
+}
+
+struct Credit {
+    role: &'static [u8],
+    who: &'static [&'static Person],
+}
+
+static ANDREI: Person = Person {
+    first: b"ANDREI",
+    last: b"KSIANZOU",
+};
+static ALINA: Person = Person {
+    first: b"ALINA",
+    last: b"VELIHAYEVA",
+};
+static VITALI: Person = Person {
+    first: b"VITALI",
+    last: b"KSIANZOU",
+};
+static ALEX: Person = Person {
+    first: b"ALEX",
+    last: b"KORSHUNAU",
+};
+
+/// One line per post. A name lives here once, and the roll repeats it.
+static STAFF: &[Credit] = &[
+    Credit {
+        role: b"DIRECTOR",
+        who: &[&ANDREI],
+    },
+    Credit {
+        role: b"PRODUCER",
+        who: &[&VITALI],
+    },
+    Credit {
+        role: b"GAME DESIGN",
+        who: &[&ANDREI],
+    },
+    Credit {
+        role: b"LEVEL DESIGN",
+        who: &[&ANDREI],
+    },
+    Credit {
+        role: b"MAIN PROGRAM",
+        who: &[&ANDREI],
+    },
+    Credit {
+        role: b"PROGRAM",
+        who: &[&ALEX],
+    },
+    Credit {
+        role: b"CHARACTER DESIGN",
+        who: &[&ALINA],
+    },
+    Credit {
+        role: b"GRAPHIC DESIGN",
+        who: &[&ALINA],
+    },
+    Credit {
+        role: b"MUSIC",
+        who: &[&ANDREI],
+    },
+    Credit {
+        role: b"SOUND EFFECTS",
+        who: &[&ANDREI],
+    },
+    Credit {
+        role: b"SPECIAL THANKS",
+        who: &[&ANDREI, &ALINA, &VITALI, &ALEX],
+    },
+];
+
+/// End roll for the last sortie. Roles are the short titles of that era.
 pub(crate) fn draw_credits(frame: &mut agb::display::GraphicsFrame, age: i32) {
-    let scroll = (age / 2).min(368);
-    let base = 160 - scroll;
-    let lines: &[(&[u8], i32)] = &[
-        (b"DRONE", 0),
-        (b"AUTHOR", 28),
-        (b"ANDREI", 46),
-        (b"KSIANZOU", 64),
-        (b"DESIGN", 88),
-        (b"ANDREI", 106),
-        (b"KSIANZOU", 124),
-        (b"ARTIST", 148),
-        (b"ALINA", 166),
-        (b"VELIHAYEVA", 184),
-        (b"PRODUCTION", 208),
-        (b"VITALI", 226),
-        (b"KSIANZOU", 244),
-        (b"MARBLE ZOO", 272),
-        (b"games", 290),
-        (b"2026", 312),
-    ];
-    for (text, y) in lines {
-        show_text(frame, text, base + y);
+    let mut end = 16i32;
+    for post in STAFF {
+        end += 8 + post.who.len() as i32 * 18 + 6;
     }
+    end += 24;
+    // The year rests just above the bottom.
+    let scroll = (age / 4).min(32 + end);
+    let base = 160 - scroll;
+    show_small(frame, b"DRONE", base);
+    let mut y = 16i32;
+    for post in STAFF {
+        show_role(frame, post.role, base + y);
+        y += 8;
+        for person in post.who {
+            show_small(frame, person.first, base + y);
+            y += 9;
+            show_small(frame, person.last, base + y);
+            y += 9;
+        }
+        y += 6;
+    }
+    y += 4;
+    show_small(frame, b"MARBLE ZOO", base + y);
+    show_small(frame, b"games", base + y + 10);
+    show_small(frame, b"2026", base + y + 20);
     draw_credit_craft(frame, age);
 }
 

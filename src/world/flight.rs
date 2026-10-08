@@ -22,7 +22,7 @@ impl super::World {
             return level.clamp(12, 108);
         }
         let alt_px = (self.alt >> 8).max(1);
-        let skip = (alt_px * FLOOR_ZOOM * 25 / 48).max(12);
+        let skip = (alt_px * FLOOR_ZOOM * 25 / REACH).max(12);
         let buried = -skip;
         let start = 13; // 0.05 turn
         let span = 26; // the next 0.10 turn buries the horizon

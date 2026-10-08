@@ -19,6 +19,9 @@ pub(crate) const VIEW: i32 = 128;
 /// Half-width of the tiles guaranteed to match the seed. A wider view would
 /// wrap onto the wrong district, so the fog starts before that distance.
 pub(crate) const SPAN: i32 = 60;
+/// Tiles out to the corner of the glass. Inside the loaded window, and short
+/// of the 64-tile alias, so the far ground is still the real district.
+pub(crate) const REACH: i32 = 56;
 pub(crate) const REGION: i32 = 64;
 pub(crate) const MAX_MARKS: usize = 128;
 pub(crate) const FOCAL: i32 = 160;
