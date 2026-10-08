@@ -47,6 +47,8 @@ include_aseprite!(
     32x32 "gfx/bunker.png",
     32x32 "gfx/soldier.png",
     16x16 "gfx/foe.png",
+    32x32 "gfx/geran.png",
+    8x8 "gfx/spark.png",
     8x8 "gfx/digits.png",
     "gfx/lbl_score.png",
     "gfx/lbl_bomb.png",
@@ -95,6 +97,8 @@ include_aseprite!(
     "gfx/help_swarm.png",
     "gfx/lvl_crows.png",
     "gfx/help_crows.png",
+    "gfx/lvl_cover.png",
+    "gfx/help_cover.png",
     "gfx/lvl_gate.png",
     "gfx/lvl_fpv.png",
     "gfx/lvl_convoy.png",
@@ -104,6 +108,11 @@ include_aseprite!(
     "gfx/help_gate.png",
     "gfx/help_convoy.png",
     "gfx/crash.png",
+    "gfx/why_cell.png",
+    "gfx/why_hull.png",
+    "gfx/why_truck.png",
+    "gfx/why_line.png",
+    "gfx/why_base.png",
     "gfx/win.png",
     32x16 "gfx/cloud.png",
     32x16 "gfx/horizon.png",
@@ -209,7 +218,7 @@ const T_TUFT: u8 = 14;
 const T_BUSH: u8 = 15;
 const T_PATCH: u8 = 16;
 
-const LEVEL_COUNT: u8 = 24;
+const LEVEL_COUNT: u8 = 25;
 /// A battery sees the drone only inside its circle, and only under this height.
 /// At this height the airframe leaves every gun's sight.
 const AA_HIDE: i32 = 20;
@@ -258,7 +267,7 @@ const MAX_TRUCKS: usize = 4;
 const MAX_TANKS: usize = 3;
 const MAX_BUNKERS: usize = 3;
 const MAX_SOLDIERS: usize = 8;
-const MAX_FOES: usize = 6;
+const MAX_FOES: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -282,6 +291,17 @@ enum Mode {
     Fpv,
     /// Spotter. The sight marks a point, then the salvo arrives.
     Guide,
+}
+
+/// Which line sits under CRASH.
+#[derive(Clone, Copy)]
+enum Why {
+    None,
+    Cell,
+    Hull,
+    Truck,
+    Line,
+    Base,
 }
 
 /// What ends the sortie. Each card is a different task and a different way to fly.
@@ -330,6 +350,8 @@ enum Task {
     Fetch,
     /// Hostile quads. Only the bullet brings one down.
     Swarm,
+    /// One truck for the posts, two quads riding above it. The bullet takes the quads, a bomb the truck.
+    Cover,
 }
 
 /// What the glass shows. The side instruments stay in their own colours.
@@ -376,8 +398,19 @@ fn task_of(level: u8) -> Task {
         19 => Task::Bend,
         20 | 21 => Task::Fetch,
         22 | 23 => Task::Swarm,
+        24 => Task::Cover,
         _ => Task::Guide,
     }
+}
+
+/// The second mine card. The rounds and the tanks sit farther from the pad.
+fn haul_card(level: u8) -> bool {
+    matches!(task_of(level), Task::Fetch) && level % LEVEL_COUNT == 21
+}
+
+/// The second drone card. The quads fly at the pad.
+fn defend_card(level: u8) -> bool {
+    matches!(task_of(level), Task::Swarm) && level % LEVEL_COUNT == 23
 }
 
 #[derive(Clone, Copy)]
@@ -477,7 +510,7 @@ struct Soldier {
     alive: bool,
 }
 
-/// Hostile quad. It holds one height and chases while the guns can see you.
+/// Hostile aircraft. A quad chases. A wing flies slower and reads from farther away.
 #[derive(Clone, Copy)]
 struct Foe {
     x: i32,
@@ -487,6 +520,10 @@ struct Foe {
     home_y: i32,
     /// Frames until another same-height bump can land.
     cool: i16,
+    /// Delta wing. Wider than a quad, so it stays a shape on the horizon.
+    wing: bool,
+    /// `1` flies south, `-1` flies north. A wing never sits on a point.
+    heading: i8,
     alive: bool,
 }
 
@@ -541,6 +578,7 @@ struct World {
     fire_cd: i16,
     recover: i16,
     crashed: bool,
+    why: Why,
     /// The last FPV airframe is gone. The same mission starts over.
     again: bool,
     /// The radio is gone. The nose drops until the airframe hits.
@@ -626,6 +664,10 @@ fn load_progress() -> Progress {
     }
     if cleared & (1 << 21) != 0 {
         unlocked = unlocked.max(22).min(LEVEL_COUNT - 1);
+    }
+    // A finished crows card already earned the escort sortie added after it.
+    if cleared & (1 << 23) != 0 {
+        unlocked = unlocked.max(24).min(LEVEL_COUNT - 1);
     }
     Progress {
         unlocked,
@@ -1030,10 +1072,11 @@ fn main(mut gba: agb::Gba) -> ! {
                     Task::Dart => sprites::LVL_DART.sprite(0),
                     Task::Bend => sprites::LVL_BEND.sprite(0),
                     Task::Skirt => sprites::LVL_SKIRT.sprite(0),
-                    Task::Fetch if world.level % LEVEL_COUNT == 21 => sprites::LVL_HAUL.sprite(0),
+                    Task::Fetch if haul_card(world.level) => sprites::LVL_HAUL.sprite(0),
                     Task::Fetch => sprites::LVL_LIFT.sprite(0),
-                    Task::Swarm if world.level % LEVEL_COUNT == 23 => sprites::LVL_CROWS.sprite(0),
+                    Task::Swarm if defend_card(world.level) => sprites::LVL_CROWS.sprite(0),
                     Task::Swarm => sprites::LVL_SWARM.sprite(0),
+                    Task::Cover => sprites::LVL_COVER.sprite(0),
                 };
                 show(&mut frame, card, 88, 40);
                 draw_digits(&mut frame, world.level as i32 + 1, 2, 64, 52);
@@ -1055,17 +1098,31 @@ fn main(mut gba: agb::Gba) -> ! {
                     Task::Dart => sprites::HELP_DART.sprite(0),
                     Task::Bend => sprites::HELP_BEND.sprite(0),
                     Task::Skirt => sprites::HELP_SKIRT.sprite(0),
-                    Task::Fetch if world.level % LEVEL_COUNT == 21 => sprites::HELP_HAUL.sprite(0),
+                    Task::Fetch if haul_card(world.level) => sprites::HELP_HAUL.sprite(0),
                     Task::Fetch => sprites::HELP_LIFT.sprite(0),
-                    Task::Swarm if world.level % LEVEL_COUNT == 23 => sprites::HELP_CROWS.sprite(0),
+                    Task::Swarm if defend_card(world.level) => sprites::HELP_CROWS.sprite(0),
                     Task::Swarm => sprites::HELP_SWARM.sprite(0),
+                    Task::Cover => sprites::HELP_COVER.sprite(0),
                     Task::Armor => sprites::HELP_ARMOR.sprite(0),
                     Task::Pill => sprites::HELP_PILL.sprite(0),
                     _ => sprites::HELP_QUAD.sprite(0),
                 };
                 show(&mut frame, help, 88, 108);
             }
-            Phase::Crash => show(&mut frame, sprites::CRASH.sprite(0), 88, 64),
+            Phase::Crash => {
+                show(&mut frame, sprites::CRASH.sprite(0), 88, 44);
+                let card = match world.why {
+                    Why::Cell => Some(sprites::WHY_CELL.sprite(0)),
+                    Why::Hull => Some(sprites::WHY_HULL.sprite(0)),
+                    Why::Truck => Some(sprites::WHY_TRUCK.sprite(0)),
+                    Why::Line => Some(sprites::WHY_LINE.sprite(0)),
+                    Why::Base => Some(sprites::WHY_BASE.sprite(0)),
+                    Why::None => None,
+                };
+                if let Some(card) = card {
+                    show(&mut frame, card, 88, 84);
+                }
+            }
             Phase::Win | Phase::Done => {
                 show(&mut frame, sprites::WIN.sprite(0), 88, 56);
                 draw_digits(&mut frame, world.score, 4, 104, 96);
@@ -1246,6 +1303,37 @@ fn sky_point(yaw: Num<i32, 8>, azimuth: i32, elev: i32, horizon: i32) -> Option<
         return None;
     }
     Some((x, y))
+}
+
+/// Screen step from a body toward the ground, away from the sun or the moon.
+/// Length is 8 pixels. The same direction is used for every shadow in the frame.
+fn shadow_cast(yaw: Num<i32, 8>, horizon: i32, sensor: Sensor) -> (i32, i32) {
+    let (azimuth, elev) = match sensor {
+        Sensor::Night => (MOON_AZIMUTH, MOON_ELEV),
+        Sensor::Day | Sensor::Heat | Sensor::Ir => (SUN_AZIMUTH, SUN_ELEV),
+    };
+    let mut delta = azimuth - yaw.to_raw();
+    delta = delta.rem_euclid(256);
+    if delta > 128 {
+        delta -= 256;
+    }
+    let ang = Num::<i32, 8>::new(delta) / Num::new(256);
+    let ahead = ang.cos().to_raw();
+    let side = ang.sin().to_raw();
+    let ahead_d = if ahead.abs() < 16 {
+        if ahead < 0 { -16 } else { 16 }
+    } else {
+        ahead
+    };
+    let lx = WIDTH / 2 + side * FOCAL / ahead_d;
+    let ly = horizon - elev;
+    let dx = WIDTH / 2 - lx;
+    let dy = horizon + 12 - ly;
+    let len = isqrt64(dx as i64 * dx as i64 + dy as i64 * dy as i64).max(1);
+    (
+        (dx as i64 * 8 / len) as i32,
+        (dy as i64 * 8 / len) as i32,
+    )
 }
 
 fn draw_sun(frame: &mut agb::display::GraphicsFrame, world: &World, horizon: i32, cockpit: bool) {
@@ -1569,6 +1657,8 @@ fn start_tile(level: u8) -> (i32, i32) {
         Task::Pill => (24, 86),
         Task::Fetch => (24, 90),
         Task::Swarm => (24, 90),
+        // South of the truck, facing the posts.
+        Task::Cover => (24, 78),
     }
 }
 
@@ -1755,7 +1845,7 @@ fn dead_cache() -> Cache {
 /// Rounds to pick up. The later card keeps them farther from the pad.
 /// The last three sit well south of the tanks, on open grass.
 fn cache_spots(level: u8) -> [(i32, i32); 6] {
-    if level % LEVEL_COUNT == 21 {
+    if haul_card(level) {
         [(14, 78), (34, 76), (24, 70), (6, 96), (42, 96), (24, 112)]
     } else {
         [(18, 82), (30, 82), (24, 76), (8, 96), (40, 96), (24, 108)]
@@ -1764,16 +1854,18 @@ fn cache_spots(level: u8) -> [(i32, i32); 6] {
 
 /// Where the mine quad can sit and fill the battery. Clear of the tanks.
 fn charge_spots(level: u8) -> &'static [(i32, i32)] {
-    match level % LEVEL_COUNT {
-        20 => &[(24, 62), (24, 102)],
-        21 => &[(24, 56), (24, 102)],
-        _ => &[],
+    if haul_card(level) {
+        &[(24, 56), (24, 102)]
+    } else if matches!(task_of(level), Task::Fetch) {
+        &[(24, 62), (24, 102)]
+    } else {
+        &[]
     }
 }
 
 /// Where those rounds have to land. The trucks stay put.
 fn mortar_spots(level: u8) -> [(i32, i32); 3] {
-    if level % LEVEL_COUNT == 21 {
+    if haul_card(level) {
         [(10, 40), (24, 34), (40, 42)]
     } else {
         [(16, 52), (26, 46), (36, 50)]
@@ -1868,16 +1960,45 @@ fn dead_foe() -> Foe {
         home_x: 0,
         home_y: 0,
         cool: 0,
+        wing: false,
+        heading: -1,
         alive: false,
+    }
+}
+
+/// The later slots on an air card are delta wings, not quads.
+fn foe_wing(level: u8, index: usize) -> bool {
+    if defend_card(level) {
+        index >= 6
+    } else if matches!(task_of(level), Task::Swarm) {
+        index >= 4
+    } else if matches!(task_of(level), Task::Cover) {
+        index >= 2
+    } else {
+        false
     }
 }
 
 /// Hostile quads. Only the later cards have them. `i32::MIN` means that slot is empty.
 fn foe_spots(level: u8) -> [(i32, i32); MAX_FOES] {
-    let placed: &[(i32, i32)] = match level % LEVEL_COUNT {
-        22 => &[(14, 72), (34, 72), (18, 56), (30, 56)],
-        23 => &[(10, 64), (38, 64), (16, 48), (32, 48), (24, 40), (8, 78)],
-        _ => &[],
+    let placed: &[(i32, i32)] = if defend_card(level) {
+        &[
+            (14, 68),
+            (34, 62),
+            (8, 56),
+            (40, 52),
+            (20, 44),
+            (28, 36),
+            (16, 24),
+            (32, 24),
+        ]
+    } else if matches!(task_of(level), Task::Swarm) {
+        &[(14, 72), (34, 72), (18, 56), (30, 56), (8, 40), (40, 40)]
+    } else if matches!(task_of(level), Task::Cover) {
+        // Quads flank the truck. The wings sit farther ahead, where a quad vanishes.
+        &[(18, 36), (30, 36), (8, 28), (40, 28)]
+    } else {
+        &[]
     };
     let mut spots = [(i32::MIN, i32::MIN); MAX_FOES];
     for (index, spot) in placed.iter().enumerate() {
@@ -1928,6 +2049,8 @@ impl World {
             Task::Night | Task::Heat | Task::Armor | Task::Pill => 14,
             Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => 11,
             Task::Guide | Task::Column | Task::Rush | Task::Push => 16,
+            // Already above the crows, so they are in the glass from the first frame.
+            Task::Swarm if defend_card(level) => 22,
             _ => 12,
         };
         let start_x = (tx * 8 + 4) << 8;
@@ -1968,7 +2091,7 @@ impl World {
             vog: if bare { 0 } else { 16 },
             stick_hold: 0,
             stick_key: 0,
-            arm: if mode == Mode::Fpv || matches!(task, Task::Swarm) {
+            arm: if mode == Mode::Fpv || matches!(task, Task::Swarm | Task::Cover) {
                 ARM_GUN
             } else if fetch {
                 ARM_MINE
@@ -1995,16 +2118,19 @@ impl World {
                 Task::Nest => 4,
                 Task::Fetch => 3,
                 Task::Swarm => {
-                    if level == 23 {
-                        6
+                    if defend_card(level) {
+                        8
                     } else {
-                        4
+                        6
                     }
                 }
+                // Two quads, two wings, and the truck. Each has to fall.
+                Task::Cover => 5,
             },
             fire_cd: 0,
             recover: 0,
             crashed: false,
+            why: Why::None,
             again: false,
             falling: false,
             hover: fetch,
@@ -2057,13 +2183,17 @@ impl World {
             }
             let x = (tx * 8 + 4) << 8;
             let y = (ty * 8 + 4) << 8;
+            let wing = foe_wing(self.level, index);
             self.foes[index] = Foe {
                 x,
                 y,
-                z: 12 << 8,
+                // Wings sit lower, so they are already in the glass when a quad is not.
+                z: if wing { 8 << 8 } else { 12 << 8 },
                 home_x: x,
                 home_y: y,
                 cool: 0,
+                wing,
+                heading: -1,
                 alive: true,
             };
         }
@@ -2126,6 +2256,22 @@ impl World {
                         alive: true,
                     };
                 }
+            }
+            Task::Cover => {
+                // Northbound between the posts. The quads ride above this truck.
+                self.trucks[0] = Truck {
+                    x: (24 * 8 + 4) << 8,
+                    y: (40 * 8 + 4) << 8,
+                    dir: -32,
+                    vertical: true,
+                    home_tx: 24,
+                    home_ty: 40,
+                    goal: true,
+                    objective: true,
+                    hp: HP_TRUCK,
+                    cool: 20,
+                    alive: true,
+                };
             }
             Task::Convoy => {
                 // Northbound on the west road, toward the pale mark.
@@ -2385,7 +2531,7 @@ impl World {
             Task::Trench => objective && !truck,
             Task::Night | Task::Heat | Task::Guide | Task::Column | Task::Lane | Task::Dart
             | Task::Bend => truck && objective,
-            Task::Convoy => goal,
+            Task::Convoy | Task::Cover => goal,
             Task::Fpv => objective,
             Task::Rush => objective && !truck,
             Task::Nest => objective && !truck,
@@ -2896,6 +3042,7 @@ impl World {
         self.update_trucks();
         self.update_tanks();
         self.check_convoy();
+        self.check_cover();
         self.check_rush();
         self.update_soldiers();
         self.update_foes();
@@ -3004,6 +3151,84 @@ impl World {
         }
     }
 
+    /// The stick slides the quad. Looking down does not change that speed.
+    /// Holding a direction speeds it up. A tap stays slow enough for a hatch.
+    /// Forward glass: up and down are height, left and right turn.
+    fn slide_motion(
+        &mut self,
+        sin_r: i32,
+        cos_r: i32,
+        pitch_in: Tri,
+        yaw_in: Tri,
+        fetch_fly: bool,
+        turning: bool,
+    ) {
+        let slide_pitch = if turning { Tri::Zero } else { pitch_in };
+        let slide_yaw = if turning { Tri::Zero } else { yaw_in };
+        let creep = if fetch_fly {
+            self.quad_creep(slide_pitch, slide_yaw)
+        } else {
+            48
+        };
+        let along = -tri_value(slide_pitch) * creep;
+        let strafe = tri_value(slide_yaw) * creep;
+        self.vx = (sin_r * along + cos_r * strafe) >> 8;
+        self.vy = ((-cos_r) * along + sin_r * strafe) >> 8;
+        self.x = wrap_coord(self.x + self.vx);
+        self.y = wrap_coord(self.y + self.vy);
+        if !turning {
+            self.bank += (Num::new(0) - self.bank) / Num::new(6);
+        }
+        // The Fetch quad sits on a round. Only the forward glass climbs and descends.
+        if fetch_fly && !self.hover {
+            self.alt += -tri_value(pitch_in) * 48;
+            if self.alt < 0 {
+                self.alt = 0;
+            }
+        }
+    }
+
+    /// A dead battery is not a wing. The quad drops where it is.
+    fn drop_motion(&mut self) {
+        self.vx = (self.vx * 3) / 4;
+        self.vy = (self.vy * 3) / 4;
+        self.x = wrap_coord(self.x + self.vx);
+        self.y = wrap_coord(self.y + self.vy);
+        self.alt -= 96;
+        if self.alt < 0 {
+            self.alt = 0;
+        }
+    }
+
+    /// Always flies forward. The stick has already tilted the nose.
+    fn cruise_motion(&mut self, sin_r: i32, cos_r: i32) {
+        let sp = self.pitch.sin().to_raw();
+        let cp = self.pitch.cos().to_raw().max(0);
+        // The spotter holds one height and loiters. Pitch only aims the glass.
+        // Slower than a sortie, fast enough that the nose does not sit on a crow.
+        let cruise = if self.mode == Mode::Guide {
+            48
+        } else if defend_card(self.level) {
+            200
+        } else {
+            400
+        };
+        let horiz = if self.mode == Mode::Guide {
+            cruise
+        } else {
+            (cruise * cp) >> 8
+        };
+        self.vx = (sin_r * horiz) >> 8;
+        self.vy = -((cos_r * horiz) >> 8);
+        self.x = wrap_coord(self.x + self.vx);
+        self.y = wrap_coord(self.y + self.vy);
+        // 110 subpixels per frame at a vertical nose. Shallower angles sink less.
+        // The spotter's stick tilts the camera and does not climb or dive.
+        if self.mode != Mode::Guide || self.falling {
+            self.alt -= (110 * sp) >> 8;
+        }
+    }
+
     /// Always flies forward. The stick tilts the nose; height and speed follow
     /// that angle, and the nose stays where you leave it.
     /// Kamikaze spends one drone and returns to the pad instead of ending the mission.
@@ -3028,11 +3253,8 @@ impl World {
         let fetch = matches!(task_of(self.level), Task::Fetch);
         if self.mode != Mode::Quad || self.falling || loss >= 16 {
             self.hover = false;
-        } else if fetch && input.is_just_pressed(Button::Select) {
-            // Select swaps the glass. Looking ahead, the stick changes height.
-            self.hover = !self.hover;
-            self.sfx |= SFX_MARK;
-        } else if !fetch && input.is_just_pressed(Button::Select) {
+        } else if input.is_just_pressed(Button::Select) {
+            // Select swaps the glass. On the mine quad the forward glass also climbs.
             self.hover = !self.hover;
             self.sfx |= SFX_MARK;
         }
@@ -3076,61 +3298,11 @@ impl World {
 
         let (sin_r, cos_r) = self.heading();
         if self.hover || fetch_fly {
-            // The stick slides the quad. Looking down does not change that speed.
-            // Holding a direction speeds it up. A tap stays slow enough for a hatch.
-            // Forward glass: up and down are height, left and right turn.
-            let slide_pitch = if turning { Tri::Zero } else { pitch_in };
-            let slide_yaw = if turning { Tri::Zero } else { yaw_in };
-            let creep = if fetch_fly {
-                self.quad_creep(slide_pitch, slide_yaw)
-            } else {
-                48
-            };
-            let along = -tri_value(slide_pitch) * creep;
-            let strafe = tri_value(slide_yaw) * creep;
-            self.vx = (sin_r * along + cos_r * strafe) >> 8;
-            self.vy = ((-cos_r) * along + sin_r * strafe) >> 8;
-            self.x = wrap_coord(self.x + self.vx);
-            self.y = wrap_coord(self.y + self.vy);
-            if !turning {
-                self.bank += (Num::new(0) - self.bank) / Num::new(6);
-            }
-            // The Fetch quad sits on a round. Only the forward glass climbs and descends.
-            if fetch_fly && !self.hover {
-                self.alt += -tri_value(pitch_in) * 48;
-                if self.alt < 0 {
-                    self.alt = 0;
-                }
-            }
+            self.slide_motion(sin_r, cos_r, pitch_in, yaw_in, fetch_fly, turning);
         } else if fetch && (self.falling || loss >= 16) {
-            // A dead battery is not a wing. The quad drops where it is.
-            self.vx = (self.vx * 3) / 4;
-            self.vy = (self.vy * 3) / 4;
-            self.x = wrap_coord(self.x + self.vx);
-            self.y = wrap_coord(self.y + self.vy);
-            self.alt -= 96;
-            if self.alt < 0 {
-                self.alt = 0;
-            }
+            self.drop_motion();
         } else {
-        let sp = self.pitch.sin().to_raw();
-        let cp = self.pitch.cos().to_raw().max(0);
-        // The spotter holds one height and loiters. Pitch only aims the glass.
-        let cruise = if self.mode == Mode::Guide { 48 } else { 400 };
-        let horiz = if self.mode == Mode::Guide {
-            cruise
-        } else {
-            (cruise * cp) >> 8
-        };
-        self.vx = (sin_r * horiz) >> 8;
-        self.vy = -((cos_r * horiz) >> 8);
-        self.x = wrap_coord(self.x + self.vx);
-        self.y = wrap_coord(self.y + self.vy);
-        // 110 subpixels per frame at a vertical nose. Shallower angles sink less.
-        // The spotter's stick tilts the camera and does not climb or dive.
-        if self.mode != Mode::Guide || self.falling {
-            self.alt -= (110 * sp) >> 8;
-        }
+            self.cruise_motion(sin_r, cos_r);
         }
         if self.alt > 40 << 8 {
             self.alt = 40 << 8;
@@ -3160,7 +3332,7 @@ impl World {
             self.vy = 0;
             // An empty battery ends the sortie. A crash from the radio still returns to the pad.
             if self.battery == 0 {
-                self.crashed = true;
+                self.fail(Why::Cell);
             } else {
                 self.recover = 22;
             }
@@ -3384,7 +3556,7 @@ impl World {
                 self.vx = 0;
                 self.vy = 0;
             } else {
-                self.crashed = true;
+                self.fail(Why::Hull);
             }
             return;
         }
@@ -3446,10 +3618,55 @@ impl World {
         )
     }
 
+    /// The drone in the glass, if the crosshair is on its picture.
+    /// One above the airframe is not drawn, so it cannot be the target either.
+    fn foe_under_sight(&self) -> Option<usize> {
+        let (sin_r, cos_r) = self.heading();
+        let horizon = self.horizon();
+        let alt_px = self.alt >> 8;
+        let aim_y = VIEW_Y + VIEW_H / 2;
+        let mut best: Option<(usize, i32)> = None;
+        for (index, foe) in self.foes.iter().enumerate() {
+            if !foe.alive || (foe.z >> 8) + 2 >= alt_px {
+                continue;
+            }
+            let Some((sx, sy)) = project(
+                self.x,
+                self.y,
+                self.alt,
+                sin_r,
+                cos_r,
+                horizon,
+                foe.x,
+                foe.y,
+                foe.z,
+            ) else {
+                continue;
+            };
+            let dx = sx - WIDTH / 2;
+            let dy = sy - aim_y;
+            let dist = dx * dx + dy * dy;
+            // On the picture, not a wide halo around it.
+            if dist > 6 * 6 {
+                continue;
+            }
+            if best.is_none_or(|(_, near)| dist < near) {
+                best = Some((index, dist));
+            }
+        }
+        best.map(|(index, _)| index)
+    }
+
     /// A burst along the nose to the ground. It hurts people and trucks, not the ground.
+    /// A hostile quad in the crosshair is the target instead, so the round meets that picture.
     fn try_gun(&mut self) -> bool {
         let (sin_r, cos_r) = self.heading();
-        let (nx, ny, nz) = self.nose_ground(sin_r, cos_r);
+        let (nx, ny, nz) = if let Some(index) = self.foe_under_sight() {
+            let foe = &self.foes[index];
+            (foe.x, foe.y, foe.z)
+        } else {
+            self.nose_ground(sin_r, cos_r)
+        };
         let span = (nx as i64 - self.x as i64)
             .abs()
             .max((ny as i64 - self.y as i64).abs())
@@ -3775,7 +3992,7 @@ impl World {
         self.add_boom(x, y, z);
         self.score += 50;
         self.sfx |= SFX_BOOM;
-        if matches!(task_of(self.level), Task::Swarm) && self.targets > 0 {
+        if matches!(task_of(self.level), Task::Swarm | Task::Cover) && self.targets > 0 {
             self.targets -= 1;
             self.sfx |= SFX_MARK;
         }
@@ -3788,7 +4005,16 @@ impl World {
         let px = self.x;
         let py = self.y;
         let pz = self.alt;
-        let defend = self.level % LEVEL_COUNT == 23;
+        let defend = defend_card(self.level);
+        let cover = matches!(task_of(self.level), Task::Cover);
+        let escort = if cover {
+            self.trucks
+                .iter()
+                .find(|truck| truck.alive && truck.goal)
+                .map(|truck| (truck.x, truck.y))
+        } else {
+            None
+        };
         let base_x = self.pad_x;
         let base_y = self.pad_y;
         let mut bump = false;
@@ -3799,20 +4025,62 @@ impl World {
             if foe.cool > 0 {
                 foe.cool -= 1;
             }
-            // The last card flies at the pad. The one before it flies at you.
-            let (tx, ty) = if defend {
-                (base_x, base_y)
-            } else if see {
-                (px, py)
+            // A wing keeps its cruise. It does not park on the truck or the player.
+            if foe.wing {
+                let speed = if defend {
+                    40
+                } else if cover {
+                    80
+                } else {
+                    64
+                };
+                if defend {
+                    let dx = base_x.wrapping_sub(foe.x);
+                    let step_x = dx.signum() * 20;
+                    foe.x = foe.x.wrapping_add(if step_x.abs() > dx.abs() { dx } else { step_x });
+                    foe.y = foe.y.wrapping_add(speed);
+                } else {
+                    if foe.heading == 0 {
+                        foe.heading = -1;
+                    }
+                    let ty = tile_of(foe.y);
+                    if ty <= 8 {
+                        foe.heading = 1;
+                    } else if ty >= 58 {
+                        foe.heading = -1;
+                    }
+                    foe.y = foe.y.wrapping_add(i32::from(foe.heading) * speed);
+                    if see && !cover {
+                        let dx = px.wrapping_sub(foe.x);
+                        foe.x = foe.x.wrapping_add(dx.signum() * 16);
+                    }
+                }
             } else {
-                (foe.home_x, foe.home_y)
-            };
-            let dx = tx.wrapping_sub(foe.x) as i64;
-            let dy = ty.wrapping_sub(foe.y) as i64;
-            let dist = isqrt64(dx * dx + dy * dy);
-            if dist > 256 {
-                foe.x = foe.x.wrapping_add((dx * 72 / dist) as i32);
-                foe.y = foe.y.wrapping_add((dy * 72 / dist) as i32);
+                // Crows fly at the pad. Cover rides above the truck. The swarm flies at you.
+                let (tx, ty) = if defend {
+                    (base_x, base_y)
+                } else if let Some((ex, ey)) = escort {
+                    let side = if foe.home_x < ex { -(24 << 8) } else { 24 << 8 };
+                    (ex.wrapping_add(side), ey.wrapping_sub(20 << 8))
+                } else if see {
+                    (px, py)
+                } else {
+                    (foe.home_x, foe.home_y)
+                };
+                let dx = tx.wrapping_sub(foe.x) as i64;
+                let dy = ty.wrapping_sub(foe.y) as i64;
+                let dist = isqrt64(dx * dx + dy * dy);
+                let step = if defend {
+                    56
+                } else if cover {
+                    40
+                } else {
+                    72
+                };
+                if dist > 256 {
+                    foe.x = foe.x.wrapping_add((dx * step / dist) as i32);
+                    foe.y = foe.y.wrapping_add((dy * step / dist) as i32);
+                }
             }
             let dz = ((foe.z - pz) >> 8).abs();
             if dz <= 2 && foe.cool == 0 && dist2_px(foe.x, foe.y, px, py) <= 12 * 12 {
@@ -4002,6 +4270,11 @@ impl World {
             }
             if self.trucks[index].objective && matches!(task_of(self.level), Task::Push) {
                 self.trucks[index].y -= rush_step(self.level);
+                continue;
+            }
+            // Faster than a road crawl, slow enough to climb, shoot, then dive.
+            if self.trucks[index].goal && matches!(task_of(self.level), Task::Cover) {
+                self.trucks[index].y -= 24;
                 continue;
             }
             let step = ground_step(self.trucks[index].dir);
@@ -4271,6 +4544,15 @@ impl World {
         }
     }
 
+    /// The first cause sticks. A later hit in the same frame does not replace it.
+    fn fail(&mut self, why: Why) {
+        if self.crashed {
+            return;
+        }
+        self.crashed = true;
+        self.why = why;
+    }
+
     /// The convoy truck reached the mark. The sortie is lost.
     fn check_convoy(&mut self) {
         if !matches!(task_of(self.level), Task::Convoy) || self.targets <= 0 {
@@ -4280,7 +4562,21 @@ impl World {
             truck.alive && truck.goal && tile_of(truck.y) <= 4
         });
         if arrived {
-            self.crashed = true;
+            self.fail(Why::Truck);
+        }
+    }
+
+    /// The escort truck reached the posts. The quads do not stop that.
+    fn check_cover(&mut self) {
+        if !matches!(task_of(self.level), Task::Cover) || self.targets <= 0 {
+            return;
+        }
+        let arrived = self
+            .trucks
+            .iter()
+            .any(|truck| truck.alive && truck.goal && tile_of(truck.y) <= 14);
+        if arrived {
+            self.fail(Why::Truck);
         }
     }
 
@@ -4297,13 +4593,13 @@ impl World {
             truck.alive && truck.objective && tile_of(truck.y) <= 14
         });
         if men || rigs {
-            self.crashed = true;
+            self.fail(Why::Line);
         }
     }
 
     /// The last card. A hostile quad that reaches the pad takes the base.
     fn check_base(&mut self) {
-        if self.level % LEVEL_COUNT != 23 || self.targets <= 0 || self.crashed {
+        if !defend_card(self.level) || self.targets <= 0 || self.crashed {
             return;
         }
         let reached = self.foes.iter().any(|foe| {
@@ -4311,7 +4607,7 @@ impl World {
         });
         if reached {
             self.add_boom(self.pad_x, self.pad_y, 0);
-            self.crashed = true;
+            self.fail(Why::Base);
         }
     }
 
@@ -4730,6 +5026,7 @@ fn show_soldier(
     sin_r: i32,
     cos_r: i32,
     sensor: Sensor,
+    yaw: Num<i32, 8>,
 ) {
     let drop = (sy - horizon).max(1);
     let pixels = sprite_pixels(drop, alt, 16, 12, 28);
@@ -4760,7 +5057,7 @@ fn show_soldier(
         .set_priority(Priority::P0)
         .show(frame);
     // Boots sit on row 26 of the 32 art. The mark is half a body wide.
-    show_shadow(frame, sx, sy, pixels, false, 26, 4);
+    show_shadow(frame, sx, sy, pixels, false, 26, 4, yaw, horizon, sensor, 8);
 }
 
 fn show_truck(
@@ -4774,6 +5071,7 @@ fn show_truck(
     sin_r: i32,
     cos_r: i32,
     sensor: Sensor,
+    yaw: Num<i32, 8>,
 ) {
     let drop = (sy - horizon).max(1);
     let pixels = sprite_pixels(drop, alt, 20, 16, 32);
@@ -4817,7 +5115,7 @@ fn show_truck(
         .set_pos((x, y))
         .set_priority(Priority::P0)
         .show(frame);
-    show_shadow(frame, sx, sy, pixels, top, 25, 5);
+    show_shadow(frame, sx, sy, pixels, top, 25, 5, yaw, horizon, sensor, 8);
 }
 
 fn show_tank(
@@ -4830,6 +5128,7 @@ fn show_tank(
     sin_r: i32,
     cos_r: i32,
     sensor: Sensor,
+    yaw: Num<i32, 8>,
 ) {
     let drop = (sy - horizon).max(1);
     let pixels = sprite_pixels(drop, alt, 22, 18, 34);
@@ -4865,7 +5164,7 @@ fn show_tank(
         .set_pos((x, y))
         .set_priority(Priority::P0)
         .show(frame);
-    show_shadow(frame, sx, sy, pixels, top, 25, 7);
+    show_shadow(frame, sx, sy, pixels, top, 25, 7, yaw, horizon, sensor, 8);
 }
 
 fn show_bunker(
@@ -4880,6 +5179,7 @@ fn show_bunker(
     sin_r: i32,
     cos_r: i32,
     sensor: Sensor,
+    yaw: Num<i32, 8>,
 ) {
     let drop = (sy - horizon).max(1);
     let pixels = sprite_pixels(drop, alt, 18, 14, 30);
@@ -4917,13 +5217,11 @@ fn show_bunker(
         .set_pos((x, y))
         .set_priority(Priority::P0)
         .show(frame);
-    show_shadow(frame, sx, sy, pixels, top, 25, 6);
+    show_shadow(frame, sx, sy, pixels, top, 25, 6, yaw, horizon, sensor, 8);
 }
 
-/// Flat contact mark on the feet. Sonic Battle and Metroid keep a solid oval
-/// under the stance and draw the body over it. A cast to the corner of the
-/// screen slides off the wheels as soon as the nose turns, so this one stays
-/// on the baseline. `span` is the width in eighths of the body.
+/// Flat contact mark. It sits off the feet, away from the sun or the moon.
+/// `lift` is 8 on the ground and longer while the body is in the air.
 fn show_shadow(
     frame: &mut agb::display::GraphicsFrame,
     sx: i32,
@@ -4932,8 +5230,12 @@ fn show_shadow(
     top: bool,
     baseline: i32,
     span: i32,
+    yaw: Num<i32, 8>,
+    horizon: i32,
+    sensor: Sensor,
+    lift: i32,
 ) {
-    // Straight down, the plan already covers the ground it stands on.
+    // Straight down, the plan already covers the ground a vehicle stands on.
     if top {
         return;
     }
@@ -4944,8 +5246,10 @@ fn show_shadow(
     let h = (w / 3).clamp(3, 5);
     let inv_x = Num::<i32, 8>::new(32) / Num::new(w);
     let inv_y = Num::<i32, 8>::new(16) / Num::new(h);
-    let x = cx - w / 2;
-    let y = foot - h / 2;
+    let (ox, oy) = shadow_cast(yaw, horizon, sensor);
+    let lift = lift.clamp(8, 22);
+    let x = cx - w / 2 + ox * lift / 8;
+    let y = foot - h / 2 + oy * lift / 8;
     if x < -32 || y < -16 || x > WIDTH || y > HEIGHT {
         return;
     }
@@ -5223,6 +5527,23 @@ fn boom_sheet(frame: i16) -> usize {
     } else {
         2
     }
+}
+
+/// A far hit is a few bright pixels, not the full fire.
+fn show_spark(
+    frame: &mut agb::display::GraphicsFrame,
+    sx: i32,
+    sy: i32,
+    cockpit: bool,
+) {
+    let x = sx - 4;
+    let y = sy - 4;
+    if cockpit
+        && (x < VIEW_X || y < VIEW_Y || x + 8 > VIEW_X + VIEW_W || y + 8 > VIEW_Y + VIEW_H)
+    {
+        return;
+    }
+    show(frame, sprites::SPARK.sprite(0), x, y);
 }
 
 fn show_fit(
@@ -5577,7 +5898,7 @@ fn draw_radar_goals(
             show_dot(frame, 1, radar_x, inst_y, bx, by);
         }
     }
-    if world.level % LEVEL_COUNT == 23 {
+    if defend_card(world.level) {
         let (bx, by) = radar_blip(
             delta(world.pad_x, world.x),
             delta(world.pad_y, world.y),
@@ -5610,6 +5931,12 @@ fn draw_radar_goals(
     if matches!(task_of(world.level), Task::Convoy) {
         let mx = (0 * 8 + 4) << 8;
         let my = (4 * 8 + 4) << 8;
+        let (bx, by) = radar_blip(delta(mx, world.x), delta(my, world.y), sin_r, cos_r);
+        show_dot(frame, 1, radar_x, inst_y, bx, by);
+    }
+    if matches!(task_of(world.level), Task::Cover) {
+        let mx = (24 * 8 + 4) << 8;
+        let my = (14 * 8 + 4) << 8;
         let (bx, by) = radar_blip(delta(mx, world.x), delta(my, world.y), sin_r, cos_r);
         show_dot(frame, 1, radar_x, inst_y, bx, by);
     }
@@ -5663,7 +5990,7 @@ fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
             }
             n
         }
-        Task::Convoy => world
+        Task::Convoy | Task::Cover => world
             .trucks
             .iter()
             .find(|truck| truck.alive && truck.goal)
@@ -5895,14 +6222,19 @@ fn draw_world(
         if world.mode == Mode::Fpv && dist2 < 48 * 48 {
             continue;
         }
-        // Night and the grey picture wash out white at the hit. The fire
-        // sprite is yellow, so it stays off those sensors. The far ground
-        // line must not hide the wash: that is where a distant mark sits.
-        if matches!(sensor, Sensor::Night | Sensor::Ir) {
+        // Past this the fire sprite is a speck. A small flash stays readable,
+        // including a hit that sits above the ground line.
+        let far = dist2 >= 80 * 80;
+        let airborne = boom.z > 2 << 8;
+        if far {
+            if boom.frame < 16 {
+                show_spark(frame, sx, sy, cockpit);
+            }
+        } else if matches!(sensor, Sensor::Night | Sensor::Ir) {
             if boom.frame < 40 {
                 show_glare(frame, sx, sy);
             }
-        } else if sy >= floor {
+        } else if sy >= floor || airborne {
             if boom.frame < 10 {
                 show(frame, sprites::FLASH.sprite(0), sx - 32, sy - 32);
             }
@@ -5989,7 +6321,12 @@ fn draw_world(
             dx as i64 * dx as i64 + dy as i64 * dy as i64 + dz as i64 * dz as i64,
         )
         .max(1);
-        let pixels = (16 * 56 / dist as i32).clamp(6, 24);
+        // A quad stays at least 16px. A wing is wider, so the shape survives the horizon.
+        let (src, pixels) = if foe.wing {
+            (32, (32 * 88 / dist as i32).clamp(22, 40))
+        } else {
+            (16, (16 * 96 / dist as i32).clamp(16, 28))
+        };
         let half = pixels / 2;
         if cockpit
             && (sx - half < VIEW_X
@@ -5999,8 +6336,21 @@ fn draw_world(
         {
             continue;
         }
+        if let Some((gx, gy)) = project(
+            world.x, world.y, world.alt, sin_r, cos_r, horizon, foe.x, foe.y, 0,
+        ) {
+            if in_view(gx, gy, cockpit) && gy >= floor {
+                let lift = 8 + (foe.z >> 8);
+                show_shadow(frame, gx, gy, 16, false, 48, 6, world.yaw, horizon, sensor, lift);
+            }
+        }
         let frame_i = if nadir_on() > 0 && horizon < 12 { 1 } else { 0 };
-        show_fit(frame, sprites::FOE.sprite(frame_i), sx, sy, 16, pixels);
+        let sprite = if foe.wing {
+            sprites::GERAN.sprite(frame_i)
+        } else {
+            sprites::FOE.sprite(frame_i)
+        };
+        show_fit(frame, sprite, sx, sy, src, pixels);
     }
     for soldier in &world.soldiers {
         if !soldier.alive {
@@ -6036,6 +6386,7 @@ fn draw_world(
             sin_r,
             cos_r,
             sensor,
+            world.yaw,
         );
     }
     for truck in &world.trucks {
@@ -6068,6 +6419,7 @@ fn draw_world(
             sin_r,
             cos_r,
             sensor,
+            world.yaw,
         );
     }
     for tank in &world.tanks {
@@ -6099,6 +6451,7 @@ fn draw_world(
             sin_r,
             cos_r,
             sensor,
+            world.yaw,
         );
     }
     for bunker in &world.bunkers {
@@ -6132,6 +6485,7 @@ fn draw_world(
             sin_r,
             cos_r,
             sensor,
+            world.yaw,
         );
     }
     draw_gate(frame, world, sin_r, cos_r, horizon, cockpit);
@@ -6196,6 +6550,27 @@ fn draw_sites(
                 horizon,
                 (0 * 8 + 4) << 8,
                 gy,
+                0,
+            ) else {
+                continue;
+            };
+            if cockpit && !in_view(sx, sy, true) {
+                continue;
+            }
+            show(frame, sprites::POST.sprite(0), sx - 4, sy - 32);
+        }
+    }
+    if matches!(task, Task::Cover) {
+        for tx in [16, 32] {
+            let Some((sx, sy)) = project(
+                world.x,
+                world.y,
+                world.alt,
+                sin_r,
+                cos_r,
+                horizon,
+                (tx * 8 + 4) << 8,
+                (14 * 8 + 4) << 8,
                 0,
             ) else {
                 continue;
@@ -6293,6 +6668,7 @@ fn draw_aa_guns(
             sin_r,
             cos_r,
             sensor,
+            world.yaw,
         );
     }
 }
