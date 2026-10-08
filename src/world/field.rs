@@ -7,6 +7,13 @@ use crate::backgrounds;
 
 impl super::World {
     pub(crate) fn new(bg: &mut AffineBackground, level: u8, pump: &mut dyn FnMut()) -> Self {
+        let mut world = Self::preview(bg, level);
+        world.boot_all(bg, pump);
+        world
+    }
+
+    /// Seats the sortie without writing the map. The menu fills that a few rows at a time.
+    pub(crate) fn preview(bg: &mut AffineBackground, level: u8) -> Self {
         let level = level % LEVEL_COUNT;
         let task = task_of(level);
         let mode = match task {
@@ -119,6 +126,8 @@ impl super::World {
             guide_frame_n: 0,
             guide_frame: [(0, 0, 0); 16],
             bloom: 0,
+            spent: 0,
+            boot: 0,
             sfx: 0,
             shots: [dead_shot(); MAX_SHOTS],
             mine_list: [dead_mine(); MAX_MINES],
@@ -130,15 +139,61 @@ impl super::World {
             foes: [dead_foe(); MAX_FOES],
         };
         world.park(bg);
-        world.refill(pump);
+        world.view_tx = tx;
+        world.view_ty = ty;
         world.seat_objective();
         world.seat_foes();
-        if matches!(task, Task::Convoy) {
-            world.paint(bg, 0, 4, T_FLOOR);
-            world.paint(bg, 0, 3, T_FLOOR);
-        }
-        world.spawn_nearby(pump);
         world
+    }
+
+    pub(crate) fn boot_ready(&self) -> bool {
+        self.boot < 0
+    }
+
+    /// Ground window first, then the units that stand on it. `rows` is the budget for this frame.
+    pub(crate) fn boot_step(&mut self, bg: &mut AffineBackground, rows: i32, pump: &mut dyn FnMut()) {
+        if self.boot < 0 {
+            return;
+        }
+        let ground = SPAN * 2 + 1;
+        let total = ground + 81;
+        let tx = tile_of(self.x);
+        let ty = tile_of(self.y);
+        for _ in 0..rows {
+            let row = self.boot as i32;
+            if row >= total {
+                self.boot = -1;
+                return;
+            }
+            if row < ground {
+                let y = ty - SPAN + row;
+                for x in (tx - SPAN)..=(tx + SPAN) {
+                    self.blit(x, y);
+                }
+            } else {
+                if row == ground && matches!(task_of(self.level), Task::Convoy) {
+                    self.paint(bg, 0, 4, T_FLOOR);
+                    self.paint(bg, 0, 3, T_FLOOR);
+                }
+                let y = ty - 40 + (row - ground);
+                for x in (tx - 40)..=(tx + 40) {
+                    self.consider_tile(x, y);
+                }
+            }
+            self.boot += 1;
+            if self.boot & 1 == 0 {
+                pump();
+            }
+        }
+        if self.boot as i32 >= total {
+            self.boot = -1;
+        }
+    }
+
+    pub(crate) fn boot_all(&mut self, bg: &mut AffineBackground, pump: &mut dyn FnMut()) {
+        while !self.boot_ready() {
+            self.boot_step(bg, 8, pump);
+        }
     }
 
     pub(crate) fn gate_x(&self) -> i32 {
@@ -208,11 +263,13 @@ impl super::World {
                 };
             }
             Task::Night | Task::Heat => {
-                let row = if matches!(task, Task::Heat) { 12 } else { 0 };
+                // Night is the first vehicle card: three trucks in a short row.
+                // Heat is the same job farther north and spread wider.
+                let row = if matches!(task, Task::Heat) { 0 } else { 28 };
                 let spots = if matches!(task, Task::Heat) {
-                    [6, 22, 38]
+                    [6, 24, 42]
                 } else {
-                    [8, 24, 40]
+                    [16, 24, 32]
                 };
                 for (index, tx) in spots.into_iter().enumerate() {
                     self.trucks[index] = Truck {
@@ -561,6 +618,7 @@ impl super::World {
             // Released from the ground, the round detonates in the claws.
             if (self.alt >> 8) > 8 && self.try_shot(KIND_MINE) {
                 self.cargo = false;
+                self.spent = self.spent.saturating_add(1);
             }
             return;
         }
@@ -847,21 +905,6 @@ impl super::World {
                 self.try_spawn_tank(tx, ty, false);
             } else if lx == 0 && ly == 8 && hash(tx, ty) % 3 == 1 {
                 self.try_spawn_tank(tx, ty, true);
-            }
-        }
-    }
-
-    pub(crate) fn spawn_nearby(&mut self, pump: &mut dyn FnMut()) {
-        let cx = tile_of(self.x);
-        let cy = tile_of(self.y);
-        let mut rows = 0u32;
-        for ty in cy - 40..=cy + 40 {
-            for tx in cx - 40..=cx + 40 {
-                self.consider_tile(tx, ty);
-            }
-            rows += 1;
-            if rows & 1 == 0 {
-                pump();
             }
         }
     }

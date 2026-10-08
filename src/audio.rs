@@ -4,7 +4,10 @@ use agb::sound::mixer::{ChannelId, SoundChannel, SoundData};
 
 use crate::world::*;
 
+/// Menu loop. The recorded melody, a quiet bass, and a soft third under it.
 pub(crate) static MUSIC: SoundData = include_wav!("sfx/music.wav");
+/// End roll. The same key and the same slow step, with more room around it.
+pub(crate) static END: SoundData = include_wav!("sfx/end.wav");
 pub(crate) static GUN_SFX: SoundData = include_wav!("sfx/gun.wav");
 pub(crate) static WHISTLE_SFX: SoundData = include_wav!("sfx/whistle.wav");
 pub(crate) static BOOM_SFX: SoundData = include_wav!("sfx/boom.wav");
@@ -54,19 +57,28 @@ pub(crate) fn play_cues(mixer: &mut agb::sound::mixer::Mixer, world: &mut World)
     world.sfx = 0;
 }
 
+fn start_loop(
+    mixer: &mut agb::sound::mixer::Mixer,
+    slot: &mut Option<ChannelId>,
+    data: SoundData,
+    volume: Num<i16, 8>,
+) {
+    let playing = match slot {
+        Some(id) => mixer.channel(id).is_some(),
+        None => false,
+    };
+    if !playing {
+        let mut music = SoundChannel::new_high_priority(data);
+        music.should_loop();
+        music.volume(volume);
+        *slot = mixer.play_sound(music);
+    }
+}
+
 /// Menu and the opening cards keep the tune. Flight is the field instead.
 pub(crate) fn music_bed(mixer: &mut agb::sound::mixer::Mixer, slot: &mut Option<ChannelId>, play: bool) {
     if play {
-        let playing = match slot {
-            Some(id) => mixer.channel(id).is_some(),
-            None => false,
-        };
-        if !playing {
-            let mut music = SoundChannel::new_high_priority(MUSIC);
-            music.should_loop();
-            music.volume(num!(0.5));
-            *slot = mixer.play_sound(music);
-        }
+        start_loop(mixer, slot, MUSIC, num!(0.5));
     } else if let Some(id) = slot.take() {
         if let Some(channel) = mixer.channel(&id) {
             channel.stop();
@@ -74,9 +86,21 @@ pub(crate) fn music_bed(mixer: &mut agb::sound::mixer::Mixer, slot: &mut Option<
     }
 }
 
+/// Credits. Same key as the menu, slower and with more air.
+pub(crate) fn end_bed(mixer: &mut agb::sound::mixer::Mixer, slot: &mut Option<ChannelId>) {
+    start_loop(mixer, slot, END, num!(0.55));
+}
+
 /// Daytime birds, and the war going on somewhere else in the field.
-pub(crate) fn ambience(mixer: &mut agb::sound::mixer::Mixer, world: &World, shot: bool, blew: bool) {
-    let day = matches!(sensor_of(world.level), Sensor::Day);
+/// Night glass is quiet: the card's own night, or a day card flown that way.
+pub(crate) fn ambience(
+    mixer: &mut agb::sound::mixer::Mixer,
+    world: &World,
+    shot: bool,
+    blew: bool,
+    sensor: Sensor,
+) {
+    let day = matches!(sensor, Sensor::Day);
     if day && world.age > 40 && hash(world.age, 4) % 190 == 0 {
         let bird = if hash(world.age, 2) & 1 == 0 {
             BIRD_SFX

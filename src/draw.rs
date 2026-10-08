@@ -122,7 +122,7 @@ pub(crate) fn draw_horizon(
             draw_moon(frame, world, horizon, cockpit);
             draw_stars(frame, world, horizon, cockpit);
         }
-        Sensor::Day => {
+        Sensor::Day | Sensor::Winter => {
             draw_clouds(frame, pan / 3, sky_h, alt_px, cockpit);
             draw_mist(frame, pan / 2, sky_h, alt_px, cockpit);
             draw_skyline(frame, pan, sky_h, cockpit);
@@ -159,7 +159,7 @@ pub(crate) fn sky_point(yaw: Num<i32, 8>, azimuth: i32, elev: i32, horizon: i32)
 pub(crate) fn shadow_cast(yaw: Num<i32, 8>, horizon: i32, sensor: Sensor) -> (i32, i32) {
     let (azimuth, elev) = match sensor {
         Sensor::Night => (MOON_AZIMUTH, MOON_ELEV),
-        Sensor::Day | Sensor::Heat | Sensor::Ir => (SUN_AZIMUTH, SUN_ELEV),
+        Sensor::Day | Sensor::Heat | Sensor::Ir | Sensor::Winter => (SUN_AZIMUTH, SUN_ELEV),
     };
     let mut delta = azimuth - yaw.to_raw();
     delta = delta.rem_euclid(256);
@@ -265,11 +265,11 @@ pub(crate) fn draw_glass_glare(
 ) {
     let lamp = match sensor {
         Sensor::Night => nvg_lamp(),
-        Sensor::Day | Sensor::Heat | Sensor::Ir => None,
+        Sensor::Day | Sensor::Heat | Sensor::Ir | Sensor::Winter => None,
     };
     let (azimuth, elev, reach, hard) = match sensor {
         Sensor::Night => (MOON_AZIMUTH, MOON_ELEV, 40, 26),
-        Sensor::Day => (SUN_AZIMUTH, SUN_ELEV, 16, 10),
+        Sensor::Day | Sensor::Winter => (SUN_AZIMUTH, SUN_ELEV, 16, 10),
         Sensor::Heat | Sensor::Ir => return,
     };
     let Some((x, y)) = sky_point(world.yaw, azimuth, elev, horizon) else {
@@ -798,19 +798,6 @@ pub(crate) fn actor_matrix(inv: Num<i32, 8>) -> AffineMatrix<Num<i32, 8>> {
     AffineMatrix::from_scale(vec2(inv, inv))
 }
 
-/// White wash on the hit. The 64 art is blown up to the 128 double-size box.
-pub(crate) fn show_glare(frame: &mut agb::display::GraphicsFrame, sx: i32, sy: i32) {
-    let inv = Num::<i32, 8>::new(1) / Num::new(2);
-    ObjectAffine::new(
-        SpriteVram::from(sprites::FLASH.sprite(0)),
-        actor_matrix(inv).into(),
-        AffineMode::AffineDouble,
-    )
-    .set_pos((sx - 64, sy - 64))
-    .set_priority(Priority::P0)
-    .show(frame);
-}
-
 pub(crate) fn show_soldier(
     frame: &mut agb::display::GraphicsFrame,
     soldier: &Soldier,
@@ -1092,6 +1079,97 @@ pub(crate) fn draw_pause(frame: &mut agb::display::GraphicsFrame, menu: u8) {
     show(frame, exit, 88, 88);
 }
 
+fn glyph(ch: u8) -> usize {
+    match ch {
+        b'A'..=b'Z' => 1 + (ch - b'A') as usize,
+        b'0'..=b'9' => 27 + (ch - b'0') as usize,
+        b'a' => 37,
+        b'e' => 38,
+        b'g' => 39,
+        b'm' => 40,
+        b's' => 41,
+        _ => 0,
+    }
+}
+
+/// One line, centred. Letters are drawn at their real size, so none are clipped.
+pub(crate) fn show_text(frame: &mut agb::display::GraphicsFrame, text: &[u8], y: i32) {
+    let mut width = 0;
+    for &ch in text {
+        width += if ch == b' ' { 8 } else { 16 };
+    }
+    let mut x = (WIDTH - width) / 2;
+    for &ch in text {
+        let adv = if ch == b' ' { 8 } else { 16 };
+        if ch != b' ' && (-16..HEIGHT).contains(&y) && (-16..WIDTH).contains(&x) {
+            show(frame, sprites::FONT.sprite(glyph(ch)), x, y);
+        }
+        x += adv;
+    }
+}
+
+/// Studio card. The marble settles, then the wordmark. The year is already up.
+pub(crate) fn draw_studio(frame: &mut agb::display::GraphicsFrame, age: i32) {
+    let t = age.min(12);
+    let dy = (12 - t) * (12 - t) / 8;
+    show(frame, sprites::MARBLE.sprite(0), 104, 6 + dy);
+    if age >= 14 {
+        show_text(frame, b"MARBLE ZOO", 42);
+        show_text(frame, b"games", 60);
+    }
+    if age >= 26 {
+        show_text(frame, b"DRONE", 92);
+    }
+    show_text(frame, b"2026", 136);
+}
+
+/// Quads and one wing, seen from above, drifting behind the roll.
+fn draw_credit_craft(frame: &mut agb::display::GraphicsFrame, age: i32) {
+    let lanes: [(i32, i32, i32, bool); 4] = [
+        (10, 12, 36, false),
+        (120, 48, 24, true),
+        (40, 96, 44, false),
+        (180, 132, 30, false),
+    ];
+    for (shift, y, speed, wing) in lanes {
+        let x = (age * speed / 40 + shift) % 300 - 40;
+        let bob = ((age / 20 + shift) & 3) - 1;
+        if wing {
+            show(frame, sprites::GERAN.sprite(1), x, y + bob);
+        } else {
+            show(frame, sprites::FOE.sprite(1), x, y + bob);
+        }
+    }
+}
+
+/// End roll for the last sortie. Lines rise and then rest.
+pub(crate) fn draw_credits(frame: &mut agb::display::GraphicsFrame, age: i32) {
+    let scroll = (age / 2).min(368);
+    let base = 160 - scroll;
+    let lines: &[(&[u8], i32)] = &[
+        (b"DRONE", 0),
+        (b"AUTHOR", 28),
+        (b"ANDREI", 46),
+        (b"KSIANZOU", 64),
+        (b"DESIGN", 88),
+        (b"ANDREI", 106),
+        (b"KSIANZOU", 124),
+        (b"ARTIST", 148),
+        (b"ALINA", 166),
+        (b"VELIHAYEVA", 184),
+        (b"PRODUCTION", 208),
+        (b"VITALI", 226),
+        (b"KSIANZOU", 244),
+        (b"MARBLE ZOO", 272),
+        (b"games", 290),
+        (b"2026", 312),
+    ];
+    for (text, y) in lines {
+        show_text(frame, text, base + y);
+    }
+    draw_credit_craft(frame, age);
+}
+
 pub(crate) fn show(frame: &mut agb::display::GraphicsFrame, sprite: &'static Sprite, x: i32, y: i32) {
     if x < -64 || y < -32 || x > WIDTH || y > HEIGHT {
         return;
@@ -1143,6 +1221,19 @@ pub(crate) fn draw_digits(
             y,
         );
         value /= 10;
+    }
+}
+
+/// Three pips under a cleared card. Yellow is earned. Red is still open.
+pub(crate) fn show_ribbon(
+    frame: &mut agb::display::GraphicsFrame,
+    marks: u8,
+    x: i32,
+    y: i32,
+) {
+    for index in 0..3 {
+        let which = if marks & (1 << index) != 0 { 1 } else { 0 };
+        show(frame, sprites::DOT.sprite(which), x + index * 12, y);
     }
 }
 
@@ -1444,6 +1535,7 @@ pub(crate) fn paint_sensor(sensor: Sensor) {
                     Sensor::Heat => cold_ground(src),
                     Sensor::Ir => ir_ground(src),
                     Sensor::Day => src,
+                    Sensor::Winter => winter_ground(src),
                 };
                 ram.add(pal * 16 + index).write_volatile(out);
             }
@@ -1462,6 +1554,22 @@ pub(crate) fn ir_ground(colour: u16) -> u16 {
     let lit = if y < 6 { 3 } else { (5 + y * 2 / 3).min(24) };
     let v = lit as u16;
     v | (v << 5) | (v << 10)
+}
+
+/// Snow. Dark tiles stay readable (roads, trunks, trenches). Grass goes pale.
+pub(crate) fn winter_ground(colour: u16) -> u16 {
+    let (r, g, b) = channels(colour);
+    if b > r + 4 && b > g {
+        let v = (b / 2 + 4).min(18) as u16;
+        return (v / 3) | ((v / 2) << 5) | (v << 10);
+    }
+    let y = luma(colour);
+    if y < 10 {
+        let v = (y / 2 + 4).min(12) as u16;
+        return v | (v << 5) | ((v + 1).min(31) << 10);
+    }
+    let v = (16 + y / 2).min(31) as u16;
+    v | (v << 5) | ((v - 1) << 10)
 }
 
 pub(crate) fn cold_ground(colour: u16) -> u16 {
@@ -1523,7 +1631,7 @@ pub(crate) fn body_palette(sensor: Sensor) -> Option<PaletteVram> {
         Sensor::Heat => Some(pals.heat.clone()),
         Sensor::Night => Some(pals.night.clone()),
         Sensor::Ir => Some(pals.ir.clone()),
-        Sensor::Day => None,
+        Sensor::Day | Sensor::Winter => None,
     }
 }
 
@@ -1537,7 +1645,7 @@ pub(crate) fn bake_body(sensor: Sensor) -> Palette16 {
                 Sensor::Heat => heat_body(colour),
                 Sensor::Night => nvg_body(colour),
                 Sensor::Ir => ir_body(colour),
-                Sensor::Day => colour,
+                Sensor::Day | Sensor::Winter => colour,
             });
         }
     }
@@ -2026,15 +2134,8 @@ pub(crate) fn draw_world(
             if boom.frame < 16 {
                 show_spark(frame, sx, sy, cockpit);
             }
-        } else if matches!(sensor, Sensor::Night | Sensor::Ir) {
-            if boom.frame < 40 {
-                show_glare(frame, sx, sy);
-            }
         } else if sy >= floor || airborne {
-            if boom.frame < 10 {
-                show(frame, sprites::FLASH.sprite(0), sx - 32, sy - 32);
-            }
-            // A hot core sits in front of the fire so a hit still reads as it opens.
+            // The fire is the blast. A near one also washes the ground, including through night glass.
             if boom.frame < 8 {
                 show_spark(frame, sx, sy, cockpit);
             }
@@ -2413,7 +2514,20 @@ pub(crate) fn draw_sites(
         if cockpit && !in_view(sx, sy, true) {
             return;
         }
-        show(frame, sprites::HQ.sprite(0), sx - 16, sy - 32);
+        // The art is 32px. Scale is around the corner, so the base is planted
+        // on the ground point and the house grows as the glass gets closer.
+        let drop = (sy - horizon).max(1);
+        let pixels = sprite_pixels(drop, world.alt, 32, 10, 56);
+        let x = sx - pixels / 2;
+        let y = sy - pixels;
+        ObjectAffine::new(
+            SpriteVram::from(sprites::HQ.sprite(0)),
+            actor_matrix(Num::<i32, 8>::new(32) / Num::new(pixels)).into(),
+            AffineMode::Affine,
+        )
+        .set_pos((x, y))
+        .set_priority(Priority::P0)
+        .show(frame);
     }
 }
 
