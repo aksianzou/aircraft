@@ -2034,6 +2034,10 @@ pub(crate) fn draw_world(
             if boom.frame < 10 {
                 show(frame, sprites::FLASH.sprite(0), sx - 32, sy - 32);
             }
+            // A hot core sits in front of the fire so a hit still reads as it opens.
+            if boom.frame < 8 {
+                show_spark(frame, sx, sy, cockpit);
+            }
             if dist2 < 40 * 40 {
                 show_fit(frame, sprites::BOOM.sprite(frame_index), sx, sy, 16, 40);
             } else {
