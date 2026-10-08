@@ -50,7 +50,9 @@ include_aseprite!(
     "gfx/lbl_vog.png",
     "gfx/lbl_alt.png",
     "gfx/lbl_drone.png",
-    16x16 "gfx/font.png",
+    8x8 "gfx/small.png",
+    8x8 "gfx/role.png",
+    64x32 "gfx/word.png",
     "gfx/help_quad.png",
     "gfx/help_fpv.png",
     "gfx/lvl_trench.png",
@@ -471,7 +473,7 @@ fn main(mut gba: agb::Gba) -> ! {
         }
         match phase {
             Phase::Title => {
-                show_text(&mut frame, b"DRONE", 4);
+                show(&mut frame, sprites::WORD.sprite(0), 88, 0);
                 let picked = progress.level;
                 let card = match task_of(picked) {
                     Task::Trench => sprites::LVL_TRENCH.sprite(0),
