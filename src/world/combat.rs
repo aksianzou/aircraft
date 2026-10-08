@@ -1075,6 +1075,14 @@ impl super::World {
             frame: 0,
             alive: true,
         };
+        // A near blast washes the ground. Far ones stay a spark and do not white the glass.
+        let near = dist2_px(self.x, self.y, x, y);
+        if near <= 72 * 72 {
+            let punch: i16 = if near <= 36 * 36 { 12 } else { 6 };
+            if self.bloom < punch {
+                self.bloom = punch;
+            }
+        }
         self.sfx |= SFX_BOOM;
     }
 }

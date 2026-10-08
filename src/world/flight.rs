@@ -66,13 +66,17 @@ impl super::World {
                 self.fire_cd = 14;
             } else if arm == ARM_BOMB && shoot && self.bombs > 0 && self.try_shot(KIND_BOMB) {
                 self.bombs -= 1;
+                self.spent = self.spent.saturating_add(1);
                 self.fire_cd = 16;
             } else if arm == ARM_HE && once && self.he > 0 && self.try_shot(KIND_HE) {
                 self.he -= 1;
+                self.spent = self.spent.saturating_add(1);
             } else if arm == ARM_MINE && once && self.mines > 0 && self.try_shot(KIND_MINE) {
                 self.mines -= 1;
+                self.spent = self.spent.saturating_add(1);
             } else if arm == ARM_VOG && once && self.vog > 0 && self.try_shot(KIND_VOG) {
                 self.vog -= 1;
+                self.spent = self.spent.saturating_add(1);
             }
         }
         if self.mode == Mode::Guide {
@@ -109,6 +113,7 @@ impl super::World {
             self.lay_ground_frame(nx, ny);
             self.guide = GUIDE_WAIT;
             self.sfx |= SFX_MARK;
+            self.spent = self.spent.saturating_add(1);
         }
         if self.guide > 0 {
             self.guide -= 1;
@@ -499,6 +504,9 @@ impl super::World {
     pub(crate) fn relaunch(&mut self) -> bool {
         if self.targets <= 0 {
             return true;
+        }
+        if self.mode == Mode::Gate {
+            self.spent = self.spent.saturating_add(1);
         }
         if self.mode == Mode::Fpv {
             self.drones -= 1;

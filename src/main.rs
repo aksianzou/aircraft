@@ -50,7 +50,7 @@ include_aseprite!(
     "gfx/lbl_vog.png",
     "gfx/lbl_alt.png",
     "gfx/lbl_drone.png",
-    "gfx/title.png",
+    16x16 "gfx/font.png",
     "gfx/help_quad.png",
     "gfx/help_fpv.png",
     "gfx/lvl_trench.png",
@@ -96,7 +96,7 @@ include_aseprite!(
     "gfx/lvl_fpv.png",
     "gfx/lvl_convoy.png",
     "gfx/lvl_hq.png",
-    "gfx/author.png",
+    32x32 "gfx/marble.png",
     32x32 "gfx/hq.png",
     "gfx/help_gate.png",
     "gfx/help_convoy.png",
@@ -117,6 +117,7 @@ include_aseprite!(
     32x16 "gfx/adi_wings.png",
     8x8 "gfx/blip.png",
     8x8 "gfx/dot.png",
+    32x8 "gfx/glass.png",
     8x8 "gfx/round.png",
     16x16 "gfx/wep.png",
     32x8 "gfx/hull.png",
@@ -167,12 +168,14 @@ fn main(mut gba: agb::Gba) -> ! {
     install_floor();
     let mut progress = load_progress();
     let mut phase = Phase::Splash;
-    let mut splash = 0u8;
     let mut splash_age = 0i32;
     let mut menu = 0u8;
+    let mut pick_hold = 0i32;
+    let mut pick_wait = 0i32;
     let mut input = ButtonController::new();
     let mut mixer = gba.mixer.mixer(Frequency::Hz10512);
     let mut music_id: Option<ChannelId> = None;
+    let mut end_tune = false;
     let mut world = World::new(&mut ground, progress.level, &mut || {
         mixer.frame();
     });
@@ -183,26 +186,49 @@ fn main(mut gba: agb::Gba) -> ! {
         if phase == Phase::Splash {
             let skip = input.is_just_pressed(Button::Start) || input.is_just_pressed(Button::A);
             splash_age += 1;
-            if skip || splash_age > 160 {
+            if skip || splash_age > 240 {
+                phase = Phase::Title;
                 splash_age = 0;
-                if splash == 0 {
-                    splash = 1;
-                } else {
-                    phase = Phase::Title;
-                }
             }
         } else if phase == Phase::Title {
-            let picked = match input.just_pressed_x_tri() {
-                Tri::Positive if world.level < progress.unlocked => Some(world.level + 1),
-                Tri::Negative if world.level > 0 => Some(world.level - 1),
+            // The card changes on the tap. The field follows after the stick is released.
+            let edge = input.just_pressed_x_tri();
+            let held = input.x_tri();
+            let step = if edge != Tri::Zero {
+                pick_hold = 0;
+                edge
+            } else if held != Tri::Zero {
+                pick_hold += 1;
+                if pick_hold >= 8 && pick_hold % 3 == 0 {
+                    held
+                } else {
+                    Tri::Zero
+                }
+            } else {
+                pick_hold = 0;
+                Tri::Zero
+            };
+            let picked = match step {
+                Tri::Positive if progress.level < progress.unlocked => Some(progress.level + 1),
+                Tri::Negative if progress.level > 0 => Some(progress.level - 1),
                 _ => None,
             };
             if let Some(level) = picked {
                 progress.level = level;
                 store_progress(&progress);
-                world = World::new(&mut ground, level, &mut || {
-                    mixer.frame();
-                });
+                pick_wait = 24;
+            }
+            if glass_open(&progress, progress.level) {
+                let now = progress.glass_n(progress.level);
+                let next = match input.just_pressed_y_tri() {
+                    Tri::Positive => Some((now + 1) % 3),
+                    Tri::Negative => Some((now + 2) % 3),
+                    Tri::Zero => None,
+                };
+                if let Some(glass) = next {
+                    progress.set_glass_n(progress.level, glass);
+                    store_progress(&progress);
+                }
             }
         }
 
@@ -227,7 +253,7 @@ fn main(mut gba: agb::Gba) -> ! {
         } else if phase != Phase::Splash && input.is_just_pressed(Button::Start) {
             match phase {
                 Phase::Title => {
-                    world = World::new(&mut ground, world.level, &mut || {
+                    world = World::new(&mut ground, progress.level, &mut || {
                         mixer.frame();
                     });
                     phase = Phase::Fly;
@@ -264,9 +290,26 @@ fn main(mut gba: agb::Gba) -> ! {
             Phase::Title => {
                 world.yaw += num!(1) / Num::new(360);
                 wrap_yaw(&mut world.yaw);
-                world.update_trucks();
-                world.update_tanks();
-                world.update_soldiers();
+                // The card is already the new sortie. The field follows once the stick is up.
+                if input.x_tri() != Tri::Zero {
+                    pick_wait = 24;
+                } else if pick_wait > 0 {
+                    pick_wait -= 1;
+                } else if world.level != progress.level {
+                    world = World::preview(&mut ground, progress.level);
+                    world.boot_step(&mut ground, 8, &mut || {
+                        mixer.frame();
+                    });
+                } else if !world.boot_ready() {
+                    world.boot_step(&mut ground, 8, &mut || {
+                        mixer.frame();
+                    });
+                }
+                if world.boot_ready() && world.level == progress.level {
+                    world.update_trucks();
+                    world.update_tanks();
+                    world.update_soldiers();
+                }
             }
             Phase::Fly => {
                 world.fly(&input, &mut ground);
@@ -274,11 +317,15 @@ fn main(mut gba: agb::Gba) -> ! {
                 if world.targets <= 0 {
                     tone(&mut mixer, CLEAR_SFX);
                     progress.cleared |= 1u32 << world.level;
+                    progress.keep_marks(world.level, earned_marks(&world));
                     if world.level + 1 < LEVEL_COUNT {
                         progress.unlocked = progress.unlocked.max(world.level + 1);
                     }
                     store_progress(&progress);
                     phase = Phase::Win;
+                    if world.level + 1 >= LEVEL_COUNT {
+                        splash_age = 0;
+                    }
                 } else if world.crashed {
                     phase = Phase::Crash;
                 }
@@ -292,7 +339,13 @@ fn main(mut gba: agb::Gba) -> ! {
                     });
                     phase = Phase::Title;
                 } else if phase == Phase::Fly {
-                    ambience(&mut mixer, &world, shot, blew);
+                    ambience(
+                        &mut mixer,
+                        &world,
+                        shot,
+                        blew,
+                        glass_of(&progress, world.level),
+                    );
                 }
             }
             Phase::Pause | Phase::Crash | Phase::Win | Phase::Done => {}
@@ -304,21 +357,41 @@ fn main(mut gba: agb::Gba) -> ! {
 
         // Ahead of the floor build. A second fill before vblank covers a long
         // frame, which otherwise replays a slice of the music.
-        music_bed(
-            &mut mixer,
-            &mut music_id,
-            !matches!(phase, Phase::Fly | Phase::Pause),
-        );
+        let ending = phase == Phase::Win && world.level + 1 >= LEVEL_COUNT;
+        if ending != end_tune {
+            if let Some(id) = music_id.take() {
+                if let Some(channel) = mixer.channel(&id) {
+                    channel.stop();
+                }
+            }
+            end_tune = ending;
+        }
+        if ending {
+            end_bed(&mut mixer, &mut music_id);
+        } else {
+            music_bed(
+                &mut mixer,
+                &mut music_id,
+                !matches!(phase, Phase::Fly | Phase::Pause),
+            );
+        }
         mixer.frame();
 
         if phase == Phase::Splash {
-            gfx.set_background_palette_colour_256(0, Rgb::new(8, 8, 16).to_rgb15());
+            gfx.set_background_palette_colour_256(0, Rgb::new(0, 0, 0).to_rgb15());
             let mut frame = gfx.frame();
-            if splash == 0 {
-                show(&mut frame, sprites::TITLE.sprite(0), 88, 64);
-            } else {
-                show(&mut frame, sprites::AUTHOR.sprite(0), 88, 64);
-            }
+            draw_studio(&mut frame, splash_age);
+            mixer.frame();
+            frame.commit();
+            // Same blend the flight uses, so the glint is glass and the next card is not surprised.
+            arm_haze(0);
+            continue;
+        }
+        if phase == Phase::Win && world.level + 1 >= LEVEL_COUNT {
+            splash_age += 1;
+            gfx.set_background_palette_colour_256(0, Rgb::new(0, 0, 0).to_rgb15());
+            let mut frame = gfx.frame();
+            draw_credits(&mut frame, splash_age);
             mixer.frame();
             frame.commit();
             continue;
@@ -345,7 +418,14 @@ fn main(mut gba: agb::Gba) -> ! {
         );
 
         let sky_h = sky_bottom(horizon, world.alt);
-        let sensor = sensor_of(world.level);
+        let sensor = glass_of(
+            &progress,
+            if phase == Phase::Title {
+                progress.level
+            } else {
+                world.level
+            },
+        );
         let playing = matches!(phase, Phase::Fly | Phase::Pause);
         let blown = playing && world.recover > 0;
         paint_sensor(sensor);
@@ -359,6 +439,7 @@ fn main(mut gba: agb::Gba) -> ! {
                     Sensor::Heat => Rgb::new(2, 1, 4),
                     Sensor::Ir => Rgb::new(5, 5, 5),
                     Sensor::Day => Rgb::new(120, 152, 168),
+                    Sensor::Winter => Rgb::new(168, 184, 196),
                 }
             }
             .to_rgb15(),
@@ -390,8 +471,9 @@ fn main(mut gba: agb::Gba) -> ! {
         }
         match phase {
             Phase::Title => {
-                show(&mut frame, sprites::TITLE.sprite(0), 88, 4);
-                let card = match task_of(world.level) {
+                show_text(&mut frame, b"DRONE", 4);
+                let picked = progress.level;
+                let card = match task_of(picked) {
                     Task::Trench => sprites::LVL_TRENCH.sprite(0),
                     Task::Officer => sprites::LVL_OFFICER.sprite(0),
                     Task::Night => sprites::LVL_NIGHT.sprite(0),
@@ -412,18 +494,27 @@ fn main(mut gba: agb::Gba) -> ! {
                     Task::Dart => sprites::LVL_DART.sprite(0),
                     Task::Bend => sprites::LVL_BEND.sprite(0),
                     Task::Skirt => sprites::LVL_SKIRT.sprite(0),
-                    Task::Fetch if haul_card(world.level) => sprites::LVL_HAUL.sprite(0),
+                    Task::Fetch if haul_card(picked) => sprites::LVL_HAUL.sprite(0),
                     Task::Fetch => sprites::LVL_LIFT.sprite(0),
-                    Task::Swarm if defend_card(world.level) => sprites::LVL_CROWS.sprite(0),
+                    Task::Swarm if defend_card(picked) => sprites::LVL_CROWS.sprite(0),
                     Task::Swarm => sprites::LVL_SWARM.sprite(0),
                     Task::Cover => sprites::LVL_COVER.sprite(0),
                 };
                 show(&mut frame, card, 88, 40);
-                draw_digits(&mut frame, world.level as i32 + 1, 2, 64, 52);
-                if progress.cleared & (1u32 << world.level) != 0 {
+                draw_digits(&mut frame, picked as i32 + 1, 2, 64, 52);
+                if progress.cleared & (1u32 << picked) != 0 {
                     show(&mut frame, sprites::DOT.sprite(1), 84, 52);
+                    show_ribbon(&mut frame, progress.mark_row(picked), 108, 76);
                 }
-                let help = match task_of(world.level) {
+                if glass_open(&progress, picked) {
+                    show(
+                        &mut frame,
+                        sprites::GLASS.sprite(progress.glass_n(picked) as usize),
+                        104,
+                        88,
+                    );
+                }
+                let help = match task_of(picked) {
                     Task::Fpv => sprites::HELP_FPV.sprite(0),
                     Task::Gate => sprites::HELP_GATE.sprite(0),
                     Task::Convoy => sprites::HELP_CONVOY.sprite(0),
@@ -438,9 +529,9 @@ fn main(mut gba: agb::Gba) -> ! {
                     Task::Dart => sprites::HELP_DART.sprite(0),
                     Task::Bend => sprites::HELP_BEND.sprite(0),
                     Task::Skirt => sprites::HELP_SKIRT.sprite(0),
-                    Task::Fetch if haul_card(world.level) => sprites::HELP_HAUL.sprite(0),
+                    Task::Fetch if haul_card(picked) => sprites::HELP_HAUL.sprite(0),
                     Task::Fetch => sprites::HELP_LIFT.sprite(0),
-                    Task::Swarm if defend_card(world.level) => sprites::HELP_CROWS.sprite(0),
+                    Task::Swarm if defend_card(picked) => sprites::HELP_CROWS.sprite(0),
                     Task::Swarm => sprites::HELP_SWARM.sprite(0),
                     Task::Cover => sprites::HELP_COVER.sprite(0),
                     Task::Armor => sprites::HELP_ARMOR.sprite(0),
@@ -466,6 +557,7 @@ fn main(mut gba: agb::Gba) -> ! {
             Phase::Win | Phase::Done => {
                 show(&mut frame, sprites::WIN.sprite(0), 88, 56);
                 draw_digits(&mut frame, world.score, 4, 104, 96);
+                show_ribbon(&mut frame, progress.mark_row(world.level), 108, 112);
             }
             Phase::Fly | Phase::Pause => {
                 if phase == Phase::Pause {

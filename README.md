@@ -2,7 +2,7 @@
 
 A reconnaissance aircraft for the Game Boy Advance. The cartridge is **`aircraft.gba`**. It opens in the official mGBA.
 
-The field is fictional: grass, dirt tracks, trenches. The sky and the instruments do not repeat the map. The developer credit appears once, on the second splash: **ILICH GAMES**.
+The field is fictional: grass, dirt tracks, trenches. The sky and the instruments do not repeat the map. The opening card is the title. Credits run after the last mission.
 
 Four aircraft. The spotter holds altitude and calls a salvo. The general-purpose drone carries a large set of charges and flies forward; **Select** switches it to a top-down view and a slow slide, and Select again restores the previous nose. The quadcopter of missions 21 and 22 always slides, and **Select** only changes the view: speed stays the same and grows while a direction is held. FPV is a kamikaze, with a wire running ahead to the charge. The top view is a shaded plan: a tank shows tracks, a turret, and a hatch in the centre. A mine, bomb, high explosive, and VOG leave the aircraft with the aircraft's own speed. The crosshair is where the nose meets the ground, in the forward glass and in the overhead picture. An empty battery drops the aircraft, and the impact ends the sortie. **Start** opens pause: Resume continues the sortie, Exit returns to level select. Level progress is written to the save. A cleared level can be selected again.
 
@@ -15,20 +15,22 @@ Four aircraft. The spotter holds altitude and calls a salvo. The general-purpose
 
 In mGBA the d-pad is the cross, X is A, Z is B, Return is Start, and Backspace is Select. On the mine quad, Select turns the glass forward: up climbs, down descends, and left and right turn. Looking down, the cross still slides.
 
+A cleared card keeps three marks. Yellow is earned, red is still open, and a mark stays once it is earned. The first is a quick finish. The second is the battery still at 30 or above when the task ends. The third is a spare load: few releases, a drone still in hand on a kamikaze card, no return to the pad on the gate, and half the airframe left when only the bullet is used. On a cleared day card, after any night card and any heat card are done, up and down change the glass. The task stays the same. Night lights the bodies on a dark field. Heat leaves the ground cold and the bodies hot.
+
 ## Missions
 
-1. Trench. Six soldiers in a line.
-2. Officer. One marked man.
-3. Convoy. Do not let the truck reach the posts.
-4. Headquarters. Break the marked tiles.
-5. Night. Three trucks.
-6. Heat. Three trucks.
+1. Officer. One marked man.
+2. Trench. Six soldiers in a line.
+3. Headquarters. Break the marked tiles.
+4. Convoy. Do not let the truck reach the posts.
+5. Night. Three trucks in a short row.
+6. Heat. Three trucks, farther north and wider apart.
 7. Gate. Fly the gap at the required height.
-8. FPV. Four drones, four pairs. When the drones run out, the mission starts over.
-9. Guidance. Three parked trucks. The salvo lands under the sight, including from far away.
+8. Guidance. Three parked trucks. The salvo lands under the sight, including from far away.
+9. Column, guidance. Trucks crawl, so the mark has to lead them.
 10. Armour, night. Three tanks far apart. Three bombs near each one are enough. A charge in the hatch takes a tank at once. The bullet does not.
 11. Bunkers, heat. Three bunkers. High explosive takes them. They fire if you descend.
-12. Column, guidance. Trucks crawl, so the mark has to lead them.
+12. FPV. Four drones, four pairs. When the drones run out, the mission starts over.
 13. Lane, day. Under 20 a gun sees the drone only inside its circle, and the radar marks the clear air. At 20 and above the guns lose the drone. The trucks are at the end of the lane.
 14. Rush, guidance. Infantry run for the base posts. Place the mark ahead of the group: during the rockets' flight they walk into it.
 15. Flare, night. The same lane, three tanks. Put the charge in the hatch.

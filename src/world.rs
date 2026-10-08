@@ -119,7 +119,7 @@ pub(crate) const MAX_FOES: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
-    /// Opening cards: the name, then the author.
+    /// Company ident, then the level card.
     Splash,
     Title,
     Fly,
@@ -210,6 +210,8 @@ pub(crate) enum Sensor {
     Heat,
     /// Active infrared illuminator: grey-green, with blooms on a blast.
     Ir,
+    /// Snow on the ground. Painted and matched, for a later card. No sortie wears it yet.
+    Winter,
 }
 
 pub(crate) fn sensor_of(level: u8) -> Sensor {
@@ -217,25 +219,32 @@ pub(crate) fn sensor_of(level: u8) -> Sensor {
         Task::Night | Task::Armor | Task::Flare => Sensor::Night,
         Task::Heat | Task::Pill | Task::Dart | Task::Skirt => Sensor::Heat,
         Task::Guide | Task::Column | Task::Rush | Task::Push | Task::Bend => Sensor::Ir,
-        _ => Sensor::Day,
+        _ => {
+            // Keeps the winter glass constructed until a later card returns it.
+            let _ = Sensor::Winter;
+            Sensor::Day
+        }
     }
 }
 
 pub(crate) fn task_of(level: u8) -> Task {
     // One campaign, in order. The cards are not a menu.
     match level % LEVEL_COUNT {
-        0 => Task::Trench,
-        1 => Task::Officer,
-        2 => Task::Convoy,
-        3 => Task::Hq,
+        // One new idea at a time: a single man, then a line, a building, a
+        // moving truck, two glasses, a height gate, the mark, then tanks,
+        // bunkers, and only then the kamikaze.
+        0 => Task::Officer,
+        1 => Task::Trench,
+        2 => Task::Hq,
+        3 => Task::Convoy,
         4 => Task::Night,
         5 => Task::Heat,
         6 => Task::Gate,
-        7 => Task::Fpv,
-        8 => Task::Guide,
+        7 => Task::Guide,
+        8 => Task::Column,
         9 => Task::Armor,
         10 => Task::Pill,
-        11 => Task::Column,
+        11 => Task::Fpv,
         12 => Task::Lane,
         13 => Task::Rush,
         14 => Task::Flare,
@@ -259,6 +268,54 @@ pub(crate) fn haul_card(level: u8) -> bool {
 /// The second drone card. The quads fly at the pad.
 pub(crate) fn defend_card(level: u8) -> bool {
     matches!(task_of(level), Task::Swarm) && level % LEVEL_COUNT == 23
+}
+
+/// Frames for the quick mark. A straight run fits. A search does not.
+pub(crate) fn time_budget(level: u8) -> i32 {
+    let frames = match task_of(level) {
+        Task::Officer | Task::Gate => 1800,
+        Task::Trench | Task::Convoy | Task::Night | Task::Nest | Task::Dart => 2700,
+        Task::Hq | Task::Heat | Task::Guide | Task::Fpv | Task::Lane | Task::Flare
+        | Task::Bend | Task::Column | Task::Armor | Task::Pill | Task::Rush | Task::Skirt => 3600,
+        Task::Push | Task::Swarm => 4200,
+        Task::Fetch => 4800,
+        Task::Cover => 4500,
+    };
+    if haul_card(level) || defend_card(level) {
+        frames + 1200
+    } else {
+        frames
+    }
+}
+
+/// Bit 0 is time, bit 1 is battery still at 30, bit 2 is a spare load.
+pub(crate) fn earned_marks(world: &World) -> u8 {
+    let mut bits = 0u8;
+    if world.age <= time_budget(world.level) {
+        bits |= 1;
+    }
+    if world.battery >= 30 {
+        bits |= 2;
+    }
+    if spare_clear(world) {
+        bits |= 4;
+    }
+    bits
+}
+
+fn spare_clear(world: &World) -> bool {
+    let limit = match task_of(world.level) {
+        Task::Gate => return world.spent == 0,
+        Task::Fpv => return world.drones >= 3,
+        Task::Nest | Task::Dart => return world.drones >= 2,
+        Task::Swarm => return world.hull >= 50,
+        Task::Officer | Task::Convoy | Task::Cover => 2,
+        Task::Guide | Task::Column | Task::Rush | Task::Bend | Task::Fetch | Task::Night
+        | Task::Heat | Task::Lane | Task::Push => 3,
+        Task::Trench | Task::Pill | Task::Skirt | Task::Armor | Task::Flare => 6,
+        Task::Hq => 8,
+    };
+    world.spent <= limit
 }
 
 #[derive(Clone, Copy)]
@@ -448,8 +505,12 @@ pub(crate) struct World {
     pub(crate) guide_frame_n: u8,
     /// Previous tile under each cell of the ground frame, so the square can leave.
     pub(crate) guide_frame: [(i32, i32, u8); 16],
-    /// IR bloom after a blast. Counts down to the plain illuminator picture.
+    /// Ground wash after a blast. Counts down to the plain picture.
     pub(crate) bloom: i16,
+    /// Drops, marks, and a gate that came back to the pad.
+    pub(crate) spent: i16,
+    /// Next row of the menu map build. Negative means the window is ready.
+    pub(crate) boot: i16,
     /// Gun, drop and blast cues for this frame.
     pub(crate) sfx: u8,
     pub(crate) shots: [Shot; MAX_SHOTS],
@@ -610,11 +671,17 @@ pub(crate) fn terrain(level: u8, tx: i32, ty: i32) -> u8 {
     if pond(tx, ty) {
         return T_WATER;
     }
-    // Woods share a 3×3 cell, so trees stand together instead of peppering the field.
+    // Woods share a 3×3 cell, so trees stand together. Often enough to read on every district.
     let wx = tx.div_euclid(3);
     let wy = ty.div_euclid(3);
-    if hash(wx, wy.wrapping_add(17)) % 28 == 0 {
-        return if n % 5 == 0 { T_BUSH } else { T_TREE };
+    if hash(wx, wy.wrapping_add(17)) % 6 == 0 {
+        return if n % 6 == 0 { T_BUSH } else { T_TREE };
+    }
+    // Mud yards between the copses. A 2×2 block, so the dirt does not speckle.
+    let dx = tx.div_euclid(2);
+    let dy = ty.div_euclid(2);
+    if hash(dx, dy.wrapping_add(3)) % 4 == 0 {
+        return T_DIRT;
     }
     if n % 29 == 0 {
         return T_TUFT;
