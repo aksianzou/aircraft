@@ -32,6 +32,8 @@ include_aseprite!(
     "gfx/mine.png",
     "gfx/vog.png",
     16x16 "gfx/boom.png",
+    16x16 "gfx/scrap.png",
+    32x32 "gfx/smoke.png",
     32x32 "gfx/truck.png",
     64x32 "gfx/truck_near.png",
     32x32 "gfx/tank.png",
@@ -118,6 +120,8 @@ include_aseprite!(
     32x16 "gfx/horizon.png",
     16x32 "gfx/grove.png",
     16x32 "gfx/grove_ir.png",
+    32x64 "gfx/grove_near.png",
+    32x64 "gfx/grove_ir_near.png",
     16x16 "gfx/bush.png",
     16x16 "gfx/bush_ir.png",
     32x32 "gfx/panel.png",
@@ -165,6 +169,7 @@ use world::*;
 #[agb::entry]
 fn main(mut gba: agb::Gba) -> ! {
     core::hint::black_box(&SAVE_KIND);
+    reserve_glass();
     let mut gfx = gba.graphics.get();
     gfx.set_background_palettes(backgrounds::PALETTES);
     // Colour 0 is the backdrop and is unused by the ground tiles. The sky is
@@ -278,7 +283,7 @@ fn main(mut gba: agb::Gba) -> ! {
                     world = World::preview(&mut ground, world.level);
                     phase = Phase::Title;
                 }
-                Phase::Win | Phase::Done => {
+                Phase::Win => {
                     let next = if world.level < progress.unlocked {
                         world.level + 1
                     } else {
@@ -328,11 +333,13 @@ fn main(mut gba: agb::Gba) -> ! {
                         progress.unlocked = progress.unlocked.max(world.level + 1);
                     }
                     store_progress(&progress);
+                    world.bloom = 0;
                     phase = Phase::Win;
                     if world.level + 1 >= LEVEL_COUNT {
                         splash_age = 0;
                     }
                 } else if world.crashed {
+                    world.bloom = 0;
                     phase = Phase::Crash;
                 }
                 let shot = world.sfx & SFX_GUN != 0;
@@ -353,7 +360,7 @@ fn main(mut gba: agb::Gba) -> ! {
                     );
                 }
             }
-            Phase::Pause | Phase::Crash | Phase::Win | Phase::Done => {}
+            Phase::Pause | Phase::Crash | Phase::Win => {}
         }
 
         if phase != Phase::Pause && (phase != Phase::Title || world.boot_ready()) {
@@ -363,20 +370,17 @@ fn main(mut gba: agb::Gba) -> ! {
         // Ahead of the floor build. A second fill before vblank covers a long
         // frame, which otherwise replays a slice of the music.
         let ending = phase == Phase::Win && world.level + 1 >= LEVEL_COUNT;
-        let loading = false;
-        if loading || ending != end_tune {
+        if ending != end_tune {
             if let Some(id) = music_id.take() {
                 if let Some(channel) = mixer.channel(&id) {
                     channel.stop();
                 }
             }
-            if !loading {
-                end_tune = ending;
-            }
+            end_tune = ending;
         }
-        if !loading && ending {
+        if ending {
             end_bed(&mut mixer, &mut music_id);
-        } else if !loading {
+        } else {
             music_bed(
                 &mut mixer,
                 &mut music_id,
@@ -538,7 +542,7 @@ fn main(mut gba: agb::Gba) -> ! {
                     show(&mut frame, card, 88, 84);
                 }
             }
-            Phase::Win | Phase::Done => {
+            Phase::Win => {
                 show(&mut frame, sprites::WIN.sprite(0), 88, 56);
                 draw_digits(&mut frame, world.score, 4, 104, 96);
                 show_ribbon(&mut frame, progress.mark_row(world.level), 94, 112);

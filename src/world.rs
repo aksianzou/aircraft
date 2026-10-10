@@ -68,6 +68,8 @@ pub(crate) const T_GRASS_D: u8 = 13;
 pub(crate) const T_TUFT: u8 = 14;
 pub(crate) const T_BUSH: u8 = 15;
 pub(crate) const T_PATCH: u8 = 16;
+/// A trunk left after a fire. The tile is scorched mud, the sprite is the stick.
+pub(crate) const T_STUMP: u8 = 17;
 
 pub(crate) const LEVEL_COUNT: u8 = 25;
 /// A battery sees the drone only inside its circle, and only under this height.
@@ -120,6 +122,15 @@ pub(crate) const MAX_TANKS: usize = 3;
 pub(crate) const MAX_BUNKERS: usize = 3;
 pub(crate) const MAX_SOLDIERS: usize = 8;
 pub(crate) const MAX_FOES: usize = 8;
+pub(crate) const MAX_HUSKS: usize = 8;
+pub(crate) const MAX_SCRAP: usize = 12;
+pub(crate) const SCRAP_TURRET: u8 = 0;
+pub(crate) const SCRAP_WHEEL: u8 = 1;
+pub(crate) const SCRAP_BIT: u8 = 2;
+pub(crate) const HUSK_TRUCK: u8 = 0;
+pub(crate) const HUSK_TANK: u8 = 1;
+pub(crate) const HUSK_BUNKER: u8 = 2;
+pub(crate) const HUSK_MAN: u8 = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -131,8 +142,6 @@ pub(crate) enum Phase {
     Pause,
     Crash,
     Win,
-    /// The last card is done.
-    Done,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -360,14 +369,41 @@ pub(crate) struct Burn {
     pub(crate) alive: bool,
 }
 
+/// Burned, not scattered. The kill already counted. The shape stays put.
+#[derive(Clone, Copy)]
+pub(crate) struct Husk {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) dir: i32,
+    pub(crate) vertical: bool,
+    pub(crate) kind: u8,
+    pub(crate) alive: bool,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Boom {
     pub(crate) x: i32,
     pub(crate) y: i32,
     pub(crate) z: i32,
-    /// Kill radius in pixels. The white disc on the ground is drawn wider.
+    /// Kill radius in pixels. A wide hit draws a larger fire.
     pub(crate) radius: i16,
     pub(crate) frame: i16,
+    /// White flash, then the black cloud, and the glass washes out.
+    pub(crate) plume: bool,
+    pub(crate) alive: bool,
+}
+
+/// A piece thrown off a vehicle. It rises and falls back onto the field.
+#[derive(Clone, Copy)]
+pub(crate) struct Scrap {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) z: i32,
+    pub(crate) vx: i32,
+    pub(crate) vy: i32,
+    pub(crate) vz: i32,
+    pub(crate) kind: u8,
+    pub(crate) life: i16,
     pub(crate) alive: bool,
 }
 
@@ -453,7 +489,6 @@ pub(crate) struct Mark {
     pub(crate) ty: i32,
     pub(crate) tile: u8,
     pub(crate) quiet: bool,
-    pub(crate) used: bool,
 }
 
 pub(crate) struct World {
@@ -531,6 +566,10 @@ pub(crate) struct World {
     pub(crate) bunkers: [Bunker; MAX_BUNKERS],
     pub(crate) soldiers: [Soldier; MAX_SOLDIERS],
     pub(crate) foes: [Foe; MAX_FOES],
+    /// Next wreck to replace once the field is full of them.
+    pub(crate) husk_at: u8,
+    pub(crate) husks: [Husk; MAX_HUSKS],
+    pub(crate) scrap: [Scrap; MAX_SCRAP],
 }
 
 /// mGBA keeps SRAM only when the ROM contains this tag.
@@ -815,6 +854,17 @@ pub(crate) fn dead_burn() -> Burn {
     }
 }
 
+pub(crate) fn dead_husk() -> Husk {
+    Husk {
+        x: 0,
+        y: 0,
+        dir: 0,
+        vertical: false,
+        kind: 0,
+        alive: false,
+    }
+}
+
 pub(crate) fn dead_boom() -> Boom {
     Boom {
         x: 0,
@@ -822,6 +872,21 @@ pub(crate) fn dead_boom() -> Boom {
         z: 0,
         radius: 0,
         frame: 0,
+        plume: false,
+        alive: false,
+    }
+}
+
+pub(crate) fn dead_scrap() -> Scrap {
+    Scrap {
+        x: 0,
+        y: 0,
+        z: 0,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        kind: 0,
+        life: 0,
         alive: false,
     }
 }
@@ -832,7 +897,6 @@ pub(crate) fn dead_mark() -> Mark {
         ty: 0,
         tile: T_FLOOR,
         quiet: false,
-        used: false,
     }
 }
 
