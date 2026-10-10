@@ -128,6 +128,9 @@ impl super::World {
             bunkers: [dead_bunker(); MAX_BUNKERS],
             soldiers: [dead_soldier(); MAX_SOLDIERS],
             foes: [dead_foe(); MAX_FOES],
+            husk_at: 0,
+            husks: [dead_husk(); MAX_HUSKS],
+            scrap: [dead_scrap(); MAX_SCRAP],
         };
         world.park(bg);
         world.view_tx = tx;
@@ -683,7 +686,6 @@ impl super::World {
             ty,
             tile,
             quiet,
-            used: true,
         };
         // The displaced scar must leave the map. Only if that cell is still
         // the one stored in the ring — a cell 128 tiles away shares the slot.

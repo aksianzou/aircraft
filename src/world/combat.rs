@@ -618,7 +618,11 @@ impl super::World {
         let hy = self.trucks[index].home_ty;
         let goal = self.trucks[index].goal;
         let objective = self.trucks[index].objective;
+        let dir = self.trucks[index].dir;
+        let vertical = self.trucks[index].vertical;
         self.trucks[index].alive = false;
+        self.leave_husk(x, y, dir, vertical, HUSK_TRUCK);
+        self.fling(x, y, false);
         self.mark_quiet(hx, hy);
         self.note_kill(
             bg,
@@ -644,7 +648,10 @@ impl super::World {
         let hx = self.tanks[index].home_tx;
         let hy = self.tanks[index].home_ty;
         let objective = self.tanks[index].objective;
+        let dir = self.tanks[index].dir;
+        let vertical = self.tanks[index].vertical;
         self.tanks[index].alive = false;
+        self.leave_husk(x, y, dir, vertical, HUSK_TANK);
         self.mark_quiet(hx, hy);
         if objective {
             self.claim_armor();
@@ -868,12 +875,36 @@ impl super::World {
                 boom.alive = false;
             }
         }
+        for bit in &mut self.scrap {
+            if !bit.alive {
+                continue;
+            }
+            bit.life += 1;
+            if bit.z > 0 {
+                bit.vz -= GRAVITY;
+                bit.x = wrap_coord(bit.x + bit.vx);
+                bit.y = wrap_coord(bit.y + bit.vy);
+                bit.z = (bit.z + bit.vz).max(0);
+            }
+            if bit.life > 48 {
+                bit.alive = false;
+            }
+        }
     }
 
     pub(crate) fn explode(&mut self, bg: &mut AffineBackground, x: i32, y: i32, radius: i32, depth: i32, kind: u8) {
         self.add_boom(x, y, 0, radius);
         self.damage_tiles(bg, x, y, radius);
         let reach = radius * radius;
+        // Inside half the radius the body is gone. Outside that, and still
+        // inside the kill, it burns in place.
+        let torn = reach / 4;
+        let mut ash_x = [0i32; 18];
+        let mut ash_y = [0i32; 18];
+        let mut ash_dir = [0i32; 18];
+        let mut ash_vert = [false; 18];
+        let mut ash_kind = [0u8; 18];
+        let mut ash_n = 0usize;
         let mut graves = [(0i32, 0i32); MAX_SOLDIERS + MAX_TRUCKS];
         let mut graves_n = 0;
         let mut trucks_hit = 0;
@@ -882,8 +913,11 @@ impl super::World {
         let mut officers_hit = 0;
         let mut obj_men = 0;
         let mut men_hit = 0;
+        let mut flung = [(0i32, 0i32, false); 8];
+        let mut flung_n = 0usize;
         for truck in &mut self.trucks {
-            if kind == KIND_BOMB && truck.alive && dist2_px(truck.x, truck.y, x, y) <= reach {
+            let dist = dist2_px(truck.x, truck.y, x, y);
+            if kind == KIND_BOMB && truck.alive && dist <= reach {
                 graves[graves_n] = (truck.home_tx, truck.home_ty);
                 graves_n += 1;
                 if truck.goal {
@@ -893,13 +927,28 @@ impl super::World {
                 } else {
                     trucks_hit += 1;
                 }
+                // A truck is metal. The blast kills it and leaves the hull,
+                // even when the round lands on the cab.
+                if ash_n < ash_x.len() {
+                    ash_x[ash_n] = truck.x;
+                    ash_y[ash_n] = truck.y;
+                    ash_dir[ash_n] = truck.dir;
+                    ash_vert[ash_n] = truck.vertical;
+                    ash_kind[ash_n] = HUSK_TRUCK;
+                    ash_n += 1;
+                }
                 truck.alive = false;
+                if flung_n < flung.len() {
+                    flung[flung_n] = (truck.x, truck.y, false);
+                    flung_n += 1;
+                }
             }
         }
         for soldier in &mut self.soldiers {
+            let dist = dist2_px(soldier.x, soldier.y, x, y);
             if matches!(kind, KIND_VOG | KIND_BOMB | KIND_HE | KIND_MINE)
                 && soldier.alive
-                && dist2_px(soldier.x, soldier.y, x, y) <= reach
+                && dist <= reach
             {
                 graves[graves_n] = (soldier.home_tx, soldier.home_ty);
                 graves_n += 1;
@@ -909,6 +958,14 @@ impl super::World {
                     obj_men += 1;
                 } else {
                     men_hit += 1;
+                }
+                if dist > torn && ash_n < ash_x.len() {
+                    ash_x[ash_n] = soldier.x;
+                    ash_y[ash_n] = soldier.y;
+                    ash_dir[ash_n] = soldier.dir;
+                    ash_vert[ash_n] = false;
+                    ash_kind[ash_n] = HUSK_MAN;
+                    ash_n += 1;
                 }
                 soldier.alive = false;
             }
@@ -966,16 +1023,39 @@ impl super::World {
             if tank.objective {
                 armor += 1;
             }
+            // The hull stays. A charge in the hatch throws the turret and
+            // opens the same plume as a HIMARS round.
+            if flung_n < flung.len() {
+                flung[flung_n] = (tank.x, tank.y, hatch);
+                flung_n += 1;
+            }
+            if ash_n < ash_x.len() {
+                ash_x[ash_n] = tank.x;
+                ash_y[ash_n] = tank.y;
+                ash_dir[ash_n] = tank.dir;
+                ash_vert[ash_n] = tank.vertical;
+                ash_kind[ash_n] = HUSK_TANK;
+                ash_n += 1;
+            }
             tank.alive = false;
             self.score += 150;
         }
         let mut pills = 0;
         for bunker in &mut self.bunkers {
-            if kind == KIND_HE && bunker.alive && dist2_px(bunker.x, bunker.y, x, y) <= reach {
+            let dist = dist2_px(bunker.x, bunker.y, x, y);
+            if kind == KIND_HE && bunker.alive && dist <= reach {
                 wrecks[wrecks_n] = (bunker.home_tx, bunker.home_ty);
                 wrecks_n += 1;
                 if bunker.objective {
                     pills += 1;
+                }
+                if dist > torn && ash_n < ash_x.len() {
+                    ash_x[ash_n] = bunker.x;
+                    ash_y[ash_n] = bunker.y;
+                    ash_dir[ash_n] = 0;
+                    ash_vert[ash_n] = false;
+                    ash_kind[ash_n] = HUSK_BUNKER;
+                    ash_n += 1;
                 }
                 bunker.alive = false;
                 self.score += 100;
@@ -989,6 +1069,22 @@ impl super::World {
         }
         for step in 0..wrecks_n {
             self.mark_quiet(wrecks[step].0, wrecks[step].1);
+        }
+        for step in 0..flung_n {
+            let (px, py, turret) = flung[step];
+            if turret {
+                self.add_plume(px, py);
+            }
+            self.fling(px, py, turret);
+        }
+        for step in 0..ash_n {
+            self.leave_husk(
+                ash_x[step],
+                ash_y[step],
+                ash_dir[step],
+                ash_vert[step],
+                ash_kind[step],
+            );
         }
         if depth >= 4 {
             return;
@@ -1070,7 +1166,7 @@ impl super::World {
             let ty = self.burns[index].ty;
             self.burns[index].alive = false;
             if matches!(self.ground_at(tx, ty), T_TREE | T_BUSH) {
-                self.paint(bg, tx, ty, T_CRATER);
+                self.paint(bg, tx, ty, T_STUMP);
             }
         }
     }
@@ -1186,7 +1282,34 @@ impl super::World {
         }
     }
 
+    pub(crate) fn leave_husk(&mut self, x: i32, y: i32, dir: i32, vertical: bool, kind: u8) {
+        let husk = Husk {
+            x,
+            y,
+            dir,
+            vertical,
+            kind,
+            alive: true,
+        };
+        if let Some(slot) = self.husks.iter().position(|held| !held.alive) {
+            self.husks[slot] = husk;
+            return;
+        }
+        let slot = (self.husk_at as usize) % MAX_HUSKS;
+        self.husk_at = self.husk_at.wrapping_add(1);
+        self.husks[slot] = husk;
+    }
+
     pub(crate) fn add_boom(&mut self, x: i32, y: i32, z: i32, radius: i32) {
+        self.spawn_boom(x, y, z, radius, false);
+    }
+
+    /// Cook-off. Same white flash and black cloud as a guided round.
+    pub(crate) fn add_plume(&mut self, x: i32, y: i32) {
+        self.spawn_boom(x, y, 0, 22, true);
+    }
+
+    fn spawn_boom(&mut self, x: i32, y: i32, z: i32, radius: i32, plume: bool) {
         let mut slot = 0;
         for (index, boom) in self.booms.iter().enumerate() {
             if !boom.alive {
@@ -1200,24 +1323,71 @@ impl super::World {
             z,
             radius: radius.clamp(0, 120) as i16,
             frame: 0,
+            plume,
             alive: true,
         };
-        // A near blast clips the sensor, then the picture comes back.
-        // The white disc on the ground is separate and stays.
-        let near = dist2_px(self.x, self.y, x, y);
-        if near <= 96 * 96 {
-            let punch: i16 = if near <= 40 * 40 {
-                22
-            } else if near <= 64 * 64 {
-                16
-            } else {
-                10
-            };
-            if self.bloom < punch {
-                self.bloom = punch;
-            }
+        // A HIMARS round, and a hatch cook-off, white the glass even from
+        // above. Any other blast flares only when the airframe is inside it.
+        let salvo = plume || (self.mode == Mode::Guide && radius >= 12 && z <= 2 << 8);
+        let dx = (self.x - x) >> 8;
+        let dy = (self.y - y) >> 8;
+        let dz = (self.alt - z) >> 8;
+        let near = dx
+            .saturating_mul(dx)
+            .saturating_add(dy.saturating_mul(dy))
+            .saturating_add(dz.saturating_mul(dz));
+        let punch: i16 = if salvo {
+            16
+        } else if near <= 10 * 10 {
+            10
+        } else if near <= 16 * 16 {
+            5
+        } else if near <= 24 * 24 {
+            2
+        } else {
+            0
+        };
+        if punch > 0 && self.bloom < punch {
+            self.bloom = punch;
         }
         self.sfx |= SFX_BOOM;
+    }
+
+    /// Wheels and plates leave the hull. A hatch also throws the turret.
+    pub(crate) fn fling(&mut self, x: i32, y: i32, turret: bool) {
+        let mut n = 0u32;
+        if turret {
+            self.launch(x, y, SCRAP_TURRET, 30, -20, 72, n);
+            n += 1;
+        }
+        for step in 0..4 {
+            let spin = hash(x.wrapping_add(step * 17), y.wrapping_add(n as i32));
+            let vx = (spin % 240) as i32 - 120;
+            let vy = (hash(y, step) % 240) as i32 - 120;
+            let vz = 40 + (spin % 24) as i32;
+            let kind = if step < 2 { SCRAP_WHEEL } else { SCRAP_BIT };
+            self.launch(x, y, kind, vx, vy, vz, n);
+            n += 1;
+        }
+    }
+
+    fn launch(&mut self, x: i32, y: i32, kind: u8, vx: i32, vy: i32, vz: i32, salt: u32) {
+        let slot = self
+            .scrap
+            .iter()
+            .position(|bit| !bit.alive)
+            .unwrap_or((salt as usize) % MAX_SCRAP);
+        self.scrap[slot] = Scrap {
+            x,
+            y,
+            z: 1 << 8,
+            vx,
+            vy,
+            vz,
+            kind,
+            life: 0,
+            alive: true,
+        };
     }
 }
 

@@ -348,23 +348,6 @@ impl super::World {
         })
     }
 
-    /// Where the nose meets the ground. Level flight looks far ahead; a dive
-    /// pulls that point in toward the plane.
-    pub(crate) fn nose(&self, sin_r: i32, cos_r: i32) -> (i32, i32) {
-        let sp = self.pitch.sin().to_raw();
-        let cp = self.pitch.cos().to_raw().max(32);
-        let alt_px = self.alt >> 8;
-        let lead = if sp > 12 {
-            (alt_px * cp / sp).clamp(6, 180)
-        } else {
-            (alt_px * 4).clamp(24, 180)
-        };
-        (
-            wrap_coord(self.x + sin_r * lead),
-            wrap_coord(self.y - cos_r * lead),
-        )
-    }
-
     /// Whoever stands on the nose point is the kamikaze target.
     pub(crate) fn strike_at(&mut self, bg: &mut AffineBackground, hx: i32, hy: i32) -> bool {
         let reach_man = 28 * 28;
@@ -414,7 +397,11 @@ impl super::World {
             let hy = self.trucks[index].home_ty;
             let goal = self.trucks[index].goal;
             let objective = self.trucks[index].objective;
+            let dir = self.trucks[index].dir;
+            let vertical = self.trucks[index].vertical;
             self.trucks[index].alive = false;
+            self.leave_husk(x, y, dir, vertical, HUSK_TRUCK);
+            self.fling(x, y, false);
             self.mark_quiet(hx, hy);
             self.note_kill(
                 bg,
