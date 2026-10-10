@@ -6,12 +6,6 @@ use alloc::vec;
 use crate::backgrounds;
 
 impl super::World {
-    pub(crate) fn new(bg: &mut AffineBackground, level: u8, pump: &mut dyn FnMut()) -> Self {
-        let mut world = Self::preview(bg, level);
-        world.boot_all(bg, pump);
-        world
-    }
-
     /// Seats the sortie without writing the map. The menu fills that a few rows at a time.
     pub(crate) fn preview(bg: &mut AffineBackground, level: u8) -> Self {
         let level = level % LEVEL_COUNT;
@@ -121,10 +115,6 @@ impl super::World {
             salvo_cd: 0,
             mark_x: 0,
             mark_y: 0,
-            guide_cx: i32::MIN,
-            guide_cy: i32::MIN,
-            guide_frame_n: 0,
-            guide_frame: [(0, 0, 0); 16],
             bloom: 0,
             spent: 0,
             boot: 0,
@@ -132,6 +122,7 @@ impl super::World {
             shots: [dead_shot(); MAX_SHOTS],
             mine_list: [dead_mine(); MAX_MINES],
             booms: [dead_boom(); MAX_BOOMS],
+            burns: [dead_burn(); MAX_BURNS],
             trucks: [dead_truck(); MAX_TRUCKS],
             tanks: [dead_tank(); MAX_TANKS],
             bunkers: [dead_bunker(); MAX_BUNKERS],
@@ -155,10 +146,13 @@ impl super::World {
         if self.boot < 0 {
             return;
         }
-        let ground = SPAN * 2 + 1;
+        // The whole ring. A gap of a few tiles shows up as a band once the
+        // card lets the floor run to the edge of the glass.
+        let ground = VIEW;
         let total = ground + 81;
         let tx = tile_of(self.x);
         let ty = tile_of(self.y);
+        let half = VIEW / 2;
         for _ in 0..rows {
             let row = self.boot as i32;
             if row >= total {
@@ -166,8 +160,8 @@ impl super::World {
                 return;
             }
             if row < ground {
-                let y = ty - SPAN + row;
-                for x in (tx - SPAN)..=(tx + SPAN) {
+                let y = ty - half + row;
+                for x in (tx - half)..(tx + half) {
                     self.blit(x, y);
                 }
             } else {
@@ -187,12 +181,6 @@ impl super::World {
         }
         if self.boot as i32 >= total {
             self.boot = -1;
-        }
-    }
-
-    pub(crate) fn boot_all(&mut self, bg: &mut AffineBackground, pump: &mut dyn FnMut()) {
-        while !self.boot_ready() {
-            self.boot_step(bg, 8, pump);
         }
     }
 

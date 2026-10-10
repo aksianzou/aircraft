@@ -21,11 +21,12 @@ pub(crate) fn mask_view(
     sky_h: i32,
     cockpit: bool,
     night: bool,
+    wash: bool,
 ) {
     if !cockpit {
         {
             let sky = frame.windows().win_in(WinIn::Win0).enable_objects();
-            if night {
+            if night || wash {
                 sky.enable_blending();
             }
             sky.set_pos(rect(vec2(0, 0), vec2(WIDTH, sky_h)));
@@ -45,7 +46,7 @@ pub(crate) fn mask_view(
     let sky_span = sky_bot - VIEW_Y;
     if sky_span > 0 {
         let sky = frame.windows().win_in(WinIn::Win1).enable_objects();
-        if night {
+        if night || wash {
             sky.enable_blending();
         }
         sky.set_pos(rect(vec2(VIEW_X, VIEW_Y), vec2(VIEW_W, sky_span)));
@@ -57,7 +58,7 @@ pub(crate) fn mask_view(
             .win_in(WinIn::Win0)
             .enable_objects()
             .enable_background(ground_id);
-        if night {
+        if night || wash {
             ground.enable_blending();
         }
         ground.set_pos(rect(vec2(VIEW_X, sky_bot), vec2(VIEW_W, ground_span)));
@@ -84,14 +85,221 @@ pub(crate) fn arm_ground() {
     }
 }
 
+/// Drop the ground layer at once. Map writes during a scanline tear the
+/// picture, so a load hides the floor before it touches the table.
+pub(crate) fn hide_ground() {
+    unsafe {
+        let disp = 0x0400_0000 as *mut u16;
+        let cur = disp.read_volatile();
+        disp.write_volatile(cur & !(1 << 10));
+    }
+}
+
+/// One card for every mission. The field loads behind it, so changing
+/// sortie does not swap the picture for another splash.
+pub(crate) fn draw_select(
+    frame: &mut agb::display::GraphicsFrame,
+    level: u8,
+    marks: u8,
+    can_left: bool,
+    can_right: bool,
+    age: i32,
+    sensor: Sensor,
+    glass: Option<u8>,
+) {
+    match sensor {
+        Sensor::Night => {
+            show(frame, sprites::MOON.sprite(0), 176, 4);
+            for (x, y) in [(12, 8), (36, 22), (168, 28), (200, 14), (148, 6)] {
+                show(frame, sprites::STAR.sprite(0), x, y);
+            }
+        }
+        Sensor::Day | Sensor::Winter => {
+            show(frame, sprites::CLOUD.sprite(0), 8, 16);
+            show(frame, sprites::CLOUD.sprite(1), 148, 8);
+            show(frame, sprites::SUN.sprite(0), 176, 4);
+        }
+        Sensor::Heat | Sensor::Ir => {}
+    }
+    draw_digits(frame, level as i32 + 1, 2, 112, 48);
+    let (top, bottom) = mission_title(level);
+    show_lockup(frame, top, bottom, 62);
+    show_stars(frame, marks, 84);
+    if let Some(which) = glass {
+        show(frame, sprites::GLASS.sprite(which as usize), 104, 104);
+    }
+    let step = (age / 6).rem_euclid(6);
+    let nudge = if step < 4 { step } else { 6 - step };
+    if can_left {
+        show_flip(frame, sprites::ARROW.sprite(0), 4 - nudge, 66, true, false);
+    }
+    if can_right {
+        show_flip(frame, sprites::ARROW.sprite(0), 220 + nudge, 66, false, false);
+    }
+    draw_load_land(frame, 0);
+}
+
+fn mission_title(level: u8) -> (&'static [u8], &'static [u8]) {
+    match task_of(level) {
+        Task::Officer => (b"OFFICER", b"HUNT"),
+        Task::Trench => (b"TRENCH", b"LINE"),
+        Task::Hq => (b"HOUSE", b"BOMB"),
+        Task::Convoy => (b"KILL", b"TRUCK"),
+        Task::Night => (b"NIGHT", b"SIGHT"),
+        Task::Heat => (b"HEAT", b"SCAN"),
+        Task::Gate => (b"THE", b"GATE"),
+        Task::Guide => (b"FIRE", b"MARK"),
+        Task::Column => (b"COLUMN", b"MARK"),
+        Task::Armor => (b"ARMOR", b"HUNT"),
+        Task::Pill => (b"PILL", b"BOX"),
+        Task::Fpv => (b"LAST", b"DIVE"),
+        Task::Lane => (b"THE", b"LANE"),
+        Task::Rush => (b"ON", b"FOOT"),
+        Task::Flare => (b"NIGHT", b"LANE"),
+        Task::Nest => (b"OPEN", b"NEST"),
+        Task::Dart => (b"HEAT", b"DART"),
+        Task::Push => (b"THE", b"PUSH"),
+        Task::Skirt => (b"PAST", b"GUNS"),
+        Task::Bend => (b"LOW", b"ROAD"),
+        Task::Fetch if haul_card(level) => (b"LONG", b"HAUL"),
+        Task::Fetch => (b"ONE", b"CHARGE"),
+        Task::Swarm if defend_card(level) => (b"THE", b"CROWS"),
+        Task::Swarm => (b"THE", b"SWARM"),
+        Task::Cover => (b"COVER", b"FIRE"),
+    }
+}
+
+/// Both words on one line, with a gap, so the card is a title and not a stack.
+fn show_lockup(
+    frame: &mut agb::display::GraphicsFrame,
+    top: &[u8],
+    bottom: &[u8],
+    y: i32,
+) {
+    let measure = |text: &[u8]| -> i32 {
+        text.iter()
+            .map(|&ch| if ch == b' ' { 8 } else { 15 })
+            .sum()
+    };
+    let mut x = (WIDTH - (measure(top) + 10 + measure(bottom))) / 2;
+    for (index, text) in [top, bottom].into_iter().enumerate() {
+        for &ch in text {
+            if ch != b' ' {
+                show(frame, sprites::FONT.sprite(glyph(ch)), x - 1, y);
+            }
+            x += if ch == b' ' { 8 } else { 15 };
+        }
+        if index == 0 {
+            x += 10;
+        }
+    }
+}
+
+/// The outline face. Cells are 16 wide; the letter itself sits inside that.
+pub(crate) fn show_face(frame: &mut agb::display::GraphicsFrame, text: &[u8], y: i32) {
+    let mut width = 0;
+    for &ch in text {
+        width += if ch == b' ' { 8 } else { 14 };
+    }
+    let mut x = (WIDTH - width) / 2;
+    for &ch in text {
+        let adv = if ch == b' ' { 8 } else { 14 };
+        if ch != b' ' {
+            show(frame, sprites::FONT.sprite(glyph(ch)), x - 1, y);
+        }
+        x += adv;
+    }
+}
+
+fn show_stars(frame: &mut agb::display::GraphicsFrame, marks: u8, y: i32) {
+    let x = (WIDTH - 56) / 2;
+    for index in 0..3 {
+        let which = if marks & (1 << index) != 0 { 1 } else { 0 };
+        show(frame, sprites::MEDAL.sprite(which), x + index * 20, y);
+    }
+}
+
+fn draw_load_land(frame: &mut agb::display::GraphicsFrame, pan: i32) {
+    let scroll = pan / 3;
+    let spacing = 28;
+    let first = scroll.div_euclid(spacing) * spacing;
+    let mut x = first - scroll - spacing;
+    while x < WIDTH {
+        let n = (hash((x + scroll) / spacing, 1) % 8) as usize;
+        let lift = (hash((x + scroll) / spacing, 3) % 4) as i32;
+        show_haze(frame, sprites::HORIZON.sprite(n), x, 146 - lift, false);
+        x += spacing;
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn mission_card(level: u8) -> &'static Sprite {
+    match task_of(level) {
+        Task::Trench => sprites::LVL_TRENCH.sprite(0),
+        Task::Officer => sprites::LVL_OFFICER.sprite(0),
+        Task::Night => sprites::LVL_NIGHT.sprite(0),
+        Task::Heat => sprites::LVL_HEAT.sprite(0),
+        Task::Gate => sprites::LVL_GATE.sprite(0),
+        Task::Fpv => sprites::LVL_FPV.sprite(0),
+        Task::Convoy => sprites::LVL_CONVOY.sprite(0),
+        Task::Hq => sprites::LVL_HQ.sprite(0),
+        Task::Guide => sprites::LVL_GUIDE.sprite(0),
+        Task::Armor => sprites::LVL_ARMOR.sprite(0),
+        Task::Pill => sprites::LVL_PILL.sprite(0),
+        Task::Column => sprites::LVL_COLUMN.sprite(0),
+        Task::Rush => sprites::LVL_RUSH.sprite(0),
+        Task::Push => sprites::LVL_PUSH.sprite(0),
+        Task::Lane => sprites::LVL_LANE.sprite(0),
+        Task::Flare => sprites::LVL_FLARE.sprite(0),
+        Task::Nest => sprites::LVL_NEST.sprite(0),
+        Task::Dart => sprites::LVL_DART.sprite(0),
+        Task::Bend => sprites::LVL_BEND.sprite(0),
+        Task::Skirt => sprites::LVL_SKIRT.sprite(0),
+        Task::Fetch if haul_card(level) => sprites::LVL_HAUL.sprite(0),
+        Task::Fetch => sprites::LVL_LIFT.sprite(0),
+        Task::Swarm if defend_card(level) => sprites::LVL_CROWS.sprite(0),
+        Task::Swarm => sprites::LVL_SWARM.sprite(0),
+        Task::Cover => sprites::LVL_COVER.sprite(0),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn mission_help(level: u8) -> &'static Sprite {
+    match task_of(level) {
+        Task::Fpv => sprites::HELP_FPV.sprite(0),
+        Task::Gate => sprites::HELP_GATE.sprite(0),
+        Task::Convoy => sprites::HELP_CONVOY.sprite(0),
+        Task::Heat => sprites::HELP_HEAT.sprite(0),
+        Task::Guide => sprites::HELP_GUIDE.sprite(0),
+        Task::Column => sprites::HELP_COLUMN.sprite(0),
+        Task::Rush => sprites::HELP_RUSH.sprite(0),
+        Task::Push => sprites::HELP_PUSH.sprite(0),
+        Task::Lane => sprites::HELP_LANE.sprite(0),
+        Task::Flare => sprites::HELP_FLARE.sprite(0),
+        Task::Nest => sprites::HELP_NEST.sprite(0),
+        Task::Dart => sprites::HELP_DART.sprite(0),
+        Task::Bend => sprites::HELP_BEND.sprite(0),
+        Task::Skirt => sprites::HELP_SKIRT.sprite(0),
+        Task::Fetch if haul_card(level) => sprites::HELP_HAUL.sprite(0),
+        Task::Fetch => sprites::HELP_LIFT.sprite(0),
+        Task::Swarm if defend_card(level) => sprites::HELP_CROWS.sprite(0),
+        Task::Swarm => sprites::HELP_SWARM.sprite(0),
+        Task::Cover => sprites::HELP_COVER.sprite(0),
+        Task::Armor => sprites::HELP_ARMOR.sprite(0),
+        Task::Pill => sprites::HELP_PILL.sprite(0),
+        _ => sprites::HELP_QUAD.sprite(0),
+    }
+}
+
 /// Horizon sprites and clouds blend into the sky and the ground, so the
 /// skyline edge is a haze instead of a hard cut. HUD sprites stay opaque.
 /// A positive bloom whites out the glass and then lets it back.
 pub(crate) fn arm_haze(bloom: i32) {
     unsafe {
         if bloom > 0 {
-            // Brighten BG2 and the backdrop only. Instruments are sprites.
-            (0x0400_0050 as *mut u16).write_volatile(0x00A4);
+            // The glass window is the only place blending is on, so the
+            // instruments outside it stay sharp while the picture clips white.
+            (0x0400_0050 as *mut u16).write_volatile(0x00B4);
             (0x0400_0054 as *mut u16).write_volatile(bloom.min(16) as u16);
         } else {
             // OBJ over backdrop and BG2, standard alpha. 10/16 sprite, 8/16 behind.
@@ -566,6 +774,7 @@ pub(crate) struct FloorBuf {
 
 unsafe impl Sync for FloorBuf {}
 
+#[unsafe(link_section = ".iwram")]
 pub(crate) static FLOOR: FloorBuf = FloorBuf {
     front: core::cell::UnsafeCell::new(0),
     lines: core::cell::UnsafeCell::new([[FLAT_LINE; 162]; 2]),
@@ -595,6 +804,9 @@ pub(crate) const FLOOR_DMA: u32 = 4
 pub(crate) fn install_floor() {
     let stop = unsafe {
         interrupt::add_interrupt_handler(Interrupt::VBlank, |_| {
+            // Before the first line. A palette written on a live scanline
+            // stripes the whole floor.
+            flush_look();
             (0x0400_00BA as *mut u16).write_volatile(0);
         })
     };
@@ -709,7 +921,8 @@ pub(crate) fn project(
     }
     let sy = horizon + (cam_z - world_z) * FOCAL * FLOOR_ZOOM / fwd;
     let sx = WIDTH / 2 + right * FOCAL / fwd;
-    if !(-32..WIDTH + 32).contains(&sx) || !(-32..HEIGHT + 32).contains(&sy) {
+    // Feet may sit below the glass while the body is still in it.
+    if !(-32..WIDTH + 32).contains(&sx) || !(-32..HEIGHT + 160).contains(&sy) {
         return None;
     }
     Some((sx, sy))
@@ -725,27 +938,104 @@ pub(crate) fn ground_line(horizon: i32, alt: i32, cockpit: bool) -> i32 {
     }
 }
 
-/// The figure stays off the glass unless its roof is on the scanlines that
-/// draw the ground. The life pips sit higher, so they are checked on their own.
-pub(crate) fn body_on_ground(sy: i32, body: i32, art_row: i32, ground_y: i32, cockpit: bool) -> bool {
-    if cockpit && ground_y <= VIEW_Y {
-        return true;
-    }
-    let top = sy - body / 2 - 16 + art_row * body / 32;
-    top >= ground_y
-}
-
 pub(crate) fn marks_on_ground(sy: i32, ground_y: i32, cockpit: bool) -> bool {
     cockpit && ground_y <= VIEW_Y || sy - 26 >= ground_y
 }
 
-pub(crate) fn sprite_pixels(drop: i32, alt: i32, world_h: i32, min_px: i32, max_px: i32) -> i32 {
-    let scale = nadir_on();
-    if scale > 0 {
-        return (world_h * 2 / scale).clamp(min_px, max_px);
-    }
+/// Screen height of a body, in the same scale as one mode 7 scanline.
+fn ground_span(drop: i32, alt: i32, world_h: i32) -> i32 {
     let alt_px = (alt >> 8).max(1);
-    (world_h * drop / (alt_px * FLOOR_ZOOM)).clamp(min_px, max_px)
+    let scale = nadir_on();
+    let span = if scale > 0 {
+        world_h * 2 / scale
+    } else {
+        world_h * drop / (alt_px * FLOOR_ZOOM)
+    };
+    span.max(2)
+}
+
+/// Feet may leave the bottom of the glass. The body stays while any of it
+/// is still on the picture, and the roof may stand up into the sky.
+fn actor_on_glass(sx: i32, sy: i32, span: i32, floor: i32, cockpit: bool) -> bool {
+    if cockpit && (sx < VIEW_X || sx >= VIEW_X + VIEW_W) {
+        return false;
+    }
+    if sy < floor {
+        return false;
+    }
+    let view_bot = if cockpit { VIEW_Y + VIEW_H } else { HEIGHT };
+    sy - span < view_bot
+}
+
+/// Feet stay on the ground point. Past the native size the double-size sprite
+/// takes over, and its centre is still the middle of the art.
+fn place_actor(
+    sx: i32,
+    sy: i32,
+    native_w: i32,
+    native_h: i32,
+    display_h: i32,
+    foot: i32,
+    top: bool,
+) -> (i32, i32, AffineMode) {
+    let double = display_h > native_h;
+    let mode = if double {
+        AffineMode::AffineDouble
+    } else {
+        AffineMode::Affine
+    };
+    let half_x = if double { native_w } else { native_w / 2 };
+    let half_y = if double { native_h } else { native_h / 2 };
+    let center_y = if top {
+        sy
+    } else {
+        sy - (foot - native_h / 2) * display_h / native_h
+    };
+    (sx - half_x, center_y - half_y, mode)
+}
+
+fn show_figure(
+    frame: &mut agb::display::GraphicsFrame,
+    sprite: &'static Sprite,
+    sx: i32,
+    sy: i32,
+    native_w: i32,
+    native_h: i32,
+    ink: i32,
+    foot: i32,
+    span: i32,
+    top: bool,
+    sensor: Sensor,
+    recolor: bool,
+) {
+    let display = (span.max(1) * native_h / ink.max(1)).clamp(4, native_h * 2);
+    let inv = Num::<i32, 8>::new(native_h) / Num::new(display.max(1));
+    let (x, y, mode) = place_actor(sx, sy, native_w, native_h, display, foot, top);
+    if x < -native_w * 2 || y < -native_h * 2 || x > WIDTH || y > HEIGHT {
+        return;
+    }
+    let mut object = ObjectAffine::new(SpriteVram::from(sprite), actor_matrix(inv).into(), mode);
+    // Only a sheet baked from its own colours. The shared body palette
+    // maps a truck's indices onto someone else's ramp, and the model breaks.
+    if let Some(palette) = sheet_palette(sprite, sensor) {
+        object.set_palette(palette);
+    }
+    let _ = recolor;
+    let _ = body_palette;
+    object
+        .set_pos((x, y))
+        .set_priority(Priority::P0)
+        .show(frame);
+}
+
+/// Front, right, rear, left. The close sheets are drawn in that order.
+fn four_view(oct: usize) -> usize {
+    match level_octant(oct) {
+        2 => 1,
+        4 => 2,
+        6 => 3,
+        _ => 0,
+    }
 }
 
 /// Front, side and rear only. Diagonal headings share the nearer pure side.
@@ -811,35 +1101,49 @@ pub(crate) fn show_soldier(
     yaw: Num<i32, 8>,
 ) {
     let drop = (sy - horizon).max(1);
-    let pixels = sprite_pixels(drop, alt, 16, 12, 28);
-    let inv = Num::<i32, 8>::new(32) / Num::new(pixels);
+    let span = ground_span(drop, alt, 16);
     let (fx, fy) = if soldier.dir == 0 {
         (0, -1)
     } else {
         (soldier.dir.signum(), 0)
     };
     let frame_index = projection(pitch, fx, fy, sin_r, cos_r);
-    let matrix = actor_matrix(inv);
     let bob = ((soldier.step / 8) & 1) as i32;
-    let x = sx - 16;
-    let y = sy - pixels / 2 - 16 - bob;
-    if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
-        return;
+    let sy = sy - bob;
+    // Overhead stays the small stamp. A close pass uses the tall figure,
+    // with a roof plane and a shadow side, once the stamp would only swell.
+    if detail_on() && frame_index < 8 && span >= 22 {
+        show_figure(
+            frame,
+            sprites::SOLDIER_NEAR.sprite(four_view(frame_index)),
+            sx,
+            sy,
+            32,
+            64,
+            46,
+            61,
+            span,
+            false,
+            sensor,
+            true,
+        );
+    } else {
+        show_figure(
+            frame,
+            sprites::SOLDIER.sprite(frame_index),
+            sx,
+            sy,
+            32,
+            32,
+            18,
+            26,
+            span,
+            false,
+            sensor,
+            true,
+        );
     }
-    let mut object = ObjectAffine::new(
-        SpriteVram::from(sprites::SOLDIER.sprite(frame_index)),
-        matrix.into(),
-        AffineMode::Affine,
-    );
-    if let Some(palette) = body_palette(sensor) {
-        object.set_palette(palette);
-    }
-    object
-        .set_pos((x, y))
-        .set_priority(Priority::P0)
-        .show(frame);
-    // Boots sit on row 26 of the 32 art. The mark is half a body wide.
-    show_shadow(frame, sx, sy, pixels, false, 26, 4, yaw, horizon, sensor, 8);
+    show_shadow(frame, sx, sy, span, false, 26, 4, yaw, horizon, sensor, 8);
 }
 
 pub(crate) fn show_truck(
@@ -856,8 +1160,7 @@ pub(crate) fn show_truck(
     yaw: Num<i32, 8>,
 ) {
     let drop = (sy - horizon).max(1);
-    let pixels = sprite_pixels(drop, alt, 20, 16, 32);
-    let inv = Num::<i32, 8>::new(32) / Num::new(pixels);
+    let span = ground_span(drop, alt, 12);
     let (fx, fy) = if truck.vertical {
         (0, truck.dir.signum())
     } else {
@@ -871,33 +1174,19 @@ pub(crate) fn show_truck(
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
     let top = nadir_on() > 0 && horizon < 12;
-    // Overhead keeps the real heading, including the diagonals. The side
-    // sheet does not: those frames stood the cab up off the wheels.
-    let frame_index = if top { 8 + oct } else { level_octant(oct) };
-    let matrix = actor_matrix(inv);
-    // Side views sit on their wheels. The plan view is centred on the ground point.
-    let x = sx - 16;
-    let y = if top { sy - 16 } else { sy - pixels / 2 - 16 };
-    if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
-        return;
-    }
-    let sprite = if top {
-        sprites::TRUCK_TOP.sprite(oct)
+    let (sprite, native_w, native_h, ink, foot) = if top {
+        // Diagonal frames run further into the 32 tile than the side ones.
+        let ink = if oct & 1 == 1 { 28 } else { 23 };
+        (sprites::TRUCK_TOP.sprite(oct), 32, 32, ink, 25)
+    } else if detail_on() && span >= 14 {
+        (sprites::TRUCK_NEAR.sprite(four_view(oct)), 64, 32, 21, 29)
     } else {
-        sprites::TRUCK.sprite(frame_index)
+        (sprites::TRUCK.sprite(level_octant(oct)), 32, 32, 9, 25)
     };
-    let mut object = ObjectAffine::new(SpriteVram::from(sprite), matrix.into(), AffineMode::Affine);
-    // The plan keeps its own colours. The shared night palette would hide the shape.
-    if !top {
-        if let Some(palette) = body_palette(sensor) {
-            object.set_palette(palette);
-        }
-    }
-    object
-        .set_pos((x, y))
-        .set_priority(Priority::P0)
-        .show(frame);
-    show_shadow(frame, sx, sy, pixels, top, 25, 5, yaw, horizon, sensor, 8);
+    show_figure(
+        frame, sprite, sx, sy, native_w, native_h, ink, foot, span, top, sensor, true,
+    );
+    show_shadow(frame, sx, sy, span, top, 25, 5, yaw, horizon, sensor, 8);
 }
 
 pub(crate) fn show_tank(
@@ -913,8 +1202,7 @@ pub(crate) fn show_tank(
     yaw: Num<i32, 8>,
 ) {
     let drop = (sy - horizon).max(1);
-    let pixels = sprite_pixels(drop, alt, 22, 18, 34);
-    let inv = Num::<i32, 8>::new(32) / Num::new(pixels);
+    let span = ground_span(drop, alt, 12);
     let (fx, fy) = if tank.vertical {
         (0, tank.dir.signum())
     } else {
@@ -924,29 +1212,18 @@ pub(crate) fn show_tank(
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
     let top = nadir_on() > 0 && horizon < 12;
-    let frame_index = if top { 8 + oct } else { level_octant(oct) };
-    let matrix = actor_matrix(inv);
-    let x = sx - 16;
-    let y = if top { sy - 16 } else { sy - pixels / 2 - 16 };
-    if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
-        return;
-    }
-    let sprite = if top {
-        sprites::TANK_TOP.sprite(oct)
+    let (sprite, native_w, native_h, ink, foot) = if top {
+        let ink = if oct & 1 == 1 { 32 } else { 27 };
+        (sprites::TANK_TOP.sprite(oct), 32, 32, ink, 25)
+    } else if detail_on() && span >= 14 {
+        (sprites::TANK_NEAR.sprite(four_view(oct)), 64, 32, 21, 27)
     } else {
-        sprites::TANK.sprite(frame_index)
+        (sprites::TANK.sprite(level_octant(oct)), 32, 32, 8, 25)
     };
-    let mut object = ObjectAffine::new(SpriteVram::from(sprite), matrix.into(), AffineMode::Affine);
-    if !top {
-        if let Some(palette) = body_palette(sensor) {
-            object.set_palette(palette);
-        }
-    }
-    object
-        .set_pos((x, y))
-        .set_priority(Priority::P0)
-        .show(frame);
-    show_shadow(frame, sx, sy, pixels, top, 25, 7, yaw, horizon, sensor, 8);
+    show_figure(
+        frame, sprite, sx, sy, native_w, native_h, ink, foot, span, top, sensor, true,
+    );
+    show_shadow(frame, sx, sy, span, top, 25, 7, yaw, horizon, sensor, 8);
 }
 
 pub(crate) fn show_bunker(
@@ -964,8 +1241,7 @@ pub(crate) fn show_bunker(
     yaw: Num<i32, 8>,
 ) {
     let drop = (sy - horizon).max(1);
-    let pixels = sprite_pixels(drop, alt, 18, 14, 30);
-    let inv = Num::<i32, 8>::new(32) / Num::new(pixels);
+    let span = ground_span(drop, alt, 14);
     let dx = cam_x - bunker.x;
     let dy = cam_y - bunker.y;
     let ax = dx.abs();
@@ -977,29 +1253,17 @@ pub(crate) fn show_bunker(
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
     let top = nadir_on() > 0 && horizon < 12;
-    let frame_index = if top { 8 + oct } else { oct };
-    let matrix = actor_matrix(inv);
-    let x = sx - 16;
-    let y = if top { sy - 16 } else { sy - pixels / 2 - 16 };
-    if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
-        return;
-    }
-    let sprite = if top {
-        sprites::BUNKER_TOP.sprite(oct)
+    let (sprite, native_w, native_h, ink, foot) = if top {
+        (sprites::BUNKER_TOP.sprite(oct), 32, 32, 24, 25)
+    } else if detail_on() && span >= 12 {
+        (sprites::BUNKER_NEAR.sprite(four_view(oct)), 64, 32, 22, 29)
     } else {
-        sprites::BUNKER.sprite(frame_index)
+        (sprites::BUNKER.sprite(oct), 32, 32, 8, 25)
     };
-    let mut object = ObjectAffine::new(SpriteVram::from(sprite), matrix.into(), AffineMode::Affine);
-    if !top {
-        if let Some(palette) = body_palette(sensor) {
-            object.set_palette(palette);
-        }
-    }
-    object
-        .set_pos((x, y))
-        .set_priority(Priority::P0)
-        .show(frame);
-    show_shadow(frame, sx, sy, pixels, top, 25, 6, yaw, horizon, sensor, 8);
+    show_figure(
+        frame, sprite, sx, sy, native_w, native_h, ink, foot, span, top, sensor, true,
+    );
+    show_shadow(frame, sx, sy, span, top, 25, 6, yaw, horizon, sensor, 8);
 }
 
 /// Flat contact mark. It sits off the feet, away from the sun or the moon.
@@ -1021,10 +1285,10 @@ pub(crate) fn show_shadow(
     if top {
         return;
     }
-    let origin_y = sy - body / 2 - 16;
-    let cx = sx - 16 + body / 2;
-    let foot = origin_y + baseline * body / 32;
-    let w = (body * span / 8).clamp(6, 22);
+    let _ = baseline;
+    let cx = sx;
+    let foot = sy;
+    let w = (body * span / 8).clamp(6, 40);
     let h = (w / 3).clamp(3, 5);
     let inv_x = Num::<i32, 8>::new(32) / Num::new(w);
     let inv_y = Num::<i32, 8>::new(16) / Num::new(h);
@@ -1058,8 +1322,10 @@ pub(crate) fn show_life(
     }
     let n = ((hp as i32) * 3 + max as i32 - 1) / max as i32;
     let n = n.clamp(1, 3);
+    // Overhead the body sits on the point. The side-view lift leaves the pips in empty grass.
+    let lift = if nadir_on() > 0 { 8 } else { 26 };
     for index in 0..n {
-        show(frame, sprites::DOT.sprite(0), sx - 8 + index * 4, sy - 26);
+        show(frame, sprites::DOT.sprite(0), sx - 8 + index * 4, sy - lift);
     }
 }
 
@@ -1127,12 +1393,12 @@ pub(crate) fn show_small(frame: &mut agb::display::GraphicsFrame, text: &[u8], y
 pub(crate) fn draw_studio(frame: &mut agb::display::GraphicsFrame, age: i32) {
     let t = age.min(12);
     let dy = (12 - t) * (12 - t) / 8;
-    show(frame, sprites::MARBLE.sprite(0), 104, 4 + dy);
-    show_small(frame, b"2026", 144);
+    show(frame, sprites::MARBLE.sprite(0), 104, 2 + dy);
+    show_small(frame, b"2026", 146);
     if age >= 14 {
-        show_small(frame, b"MARBLE ZOO", 42);
-        show_small(frame, b"games", 52);
-        show(frame, sprites::WORD.sprite(0), 88, 68);
+        show_face(frame, b"MARBLE ZOO", 40);
+        show_face(frame, b"games", 58);
+        show(frame, sprites::WORD.sprite(0), 88, 80);
     }
 }
 
@@ -1224,10 +1490,6 @@ static STAFF: &[Credit] = &[
         role: b"SOUND EFFECTS",
         who: &[&ANDREI],
     },
-    Credit {
-        role: b"SPECIAL THANKS",
-        who: &[&ANDREI, &ALINA, &VITALI, &ALEX],
-    },
 ];
 
 /// End roll for the last sortie. Roles are the short titles of that era.
@@ -1258,6 +1520,28 @@ pub(crate) fn draw_credits(frame: &mut agb::display::GraphicsFrame, age: i32) {
     show_small(frame, b"games", base + y + 10);
     show_small(frame, b"2026", base + y + 20);
     draw_credit_craft(frame, age);
+}
+
+fn show_flame(
+    frame: &mut agb::display::GraphicsFrame,
+    sprite: &'static Sprite,
+    x: i32,
+    y: i32,
+    sensor: Sensor,
+) {
+    if x < -64 || y < -32 || x > WIDTH || y > HEIGHT {
+        return;
+    }
+    let mut object = Object::new(SpriteVram::from(sprite));
+    if let Some(glass) = sheet_set(sensor) {
+        if let Some(palette) = glass.flame {
+            object.set_palette(palette);
+        }
+    }
+    object
+        .set_pos((x, y))
+        .set_priority(Priority::P0)
+        .show(frame);
 }
 
 pub(crate) fn show(frame: &mut agb::display::GraphicsFrame, sprite: &'static Sprite, x: i32, y: i32) {
@@ -1314,7 +1598,7 @@ pub(crate) fn draw_digits(
     }
 }
 
-/// Three pips under a cleared card. Yellow is earned. Red is still open.
+/// Three stars under a cleared card. Gold is earned. Grey is still open.
 pub(crate) fn show_ribbon(
     frame: &mut agb::display::GraphicsFrame,
     marks: u8,
@@ -1323,7 +1607,7 @@ pub(crate) fn show_ribbon(
 ) {
     for index in 0..3 {
         let which = if marks & (1 << index) != 0 { 1 } else { 0 };
-        show(frame, sprites::DOT.sprite(which), x + index * 12, y);
+        show(frame, sprites::MEDAL.sprite(which), x + index * 20, y);
     }
 }
 
@@ -1443,6 +1727,44 @@ pub(crate) fn draw_guide_glass(
     show(frame, sprites::NORTH.sprite(0), nx, ny);
 }
 
+/// The designator is a spot on the ground, not a patch of tiles. While the
+/// sight is free it sits under the crosshair. After the mark it stays there.
+fn draw_lase(
+    frame: &mut agb::display::GraphicsFrame,
+    world: &World,
+    sin_r: i32,
+    cos_r: i32,
+    horizon: i32,
+    cockpit: bool,
+) {
+    if world.mode != Mode::Guide || world.falling {
+        return;
+    }
+    let (x, y) = if world.guide > 0 || world.salvo > 0 {
+        (world.mark_x, world.mark_y)
+    } else {
+        let (nx, ny, _) = world.nose_ground(sin_r, cos_r);
+        (nx, ny)
+    };
+    let Some((sx, sy)) = project(
+        world.x, world.y, world.alt, sin_r, cos_r, horizon, x, y, 0,
+    ) else {
+        return;
+    };
+    if !in_view(sx, sy, cockpit) {
+        return;
+    }
+    if (world.age / 3) % 2 == 0 {
+        show(frame, sprites::SPARK.sprite(0), sx - 4, sy - 4);
+    }
+    let gap = 6;
+    let mark = sprites::BRACKET.sprite(0);
+    show_flip(frame, mark, sx - gap - 8, sy - gap - 8, false, false);
+    show_flip(frame, mark, sx + gap, sy - gap - 8, true, false);
+    show_flip(frame, mark, sx - gap - 8, sy + gap, false, true);
+    show_flip(frame, mark, sx + gap, sy + gap, true, true);
+}
+
 /// Two thin leads from the lower corners to the mine on the crosshair.
 pub(crate) fn draw_fpv_rig(
     frame: &mut agb::display::GraphicsFrame,
@@ -1494,6 +1816,46 @@ pub(crate) fn draw_wire(
         }
         show(frame, sprites::BEAD.sprite(0), x - 3, y - 3);
     }
+}
+
+/// White circle, wider than the kill radius, flat on the ground.
+fn show_blast(
+    frame: &mut agb::display::GraphicsFrame,
+    sx: i32,
+    sy: i32,
+    drop: i32,
+    alt: i32,
+    radius: i32,
+    age: i32,
+) {
+    let remain = (18 - age).max(4);
+    let wide = (ground_span(drop, alt, radius * 4) * remain / 18).clamp(12, 120);
+    let flat = (wide * drop / 160).clamp(6, wide);
+    let double = wide > 64 || flat > 64;
+    let mode = if double {
+        AffineMode::AffineDouble
+    } else {
+        AffineMode::Affine
+    };
+    let inv_x = Num::<i32, 8>::new(64) / Num::new(wide.max(1));
+    let inv_y = Num::<i32, 8>::new(64) / Num::new(flat.max(1));
+    let half = if double { 64 } else { 32 };
+    let x = sx - half;
+    let y = sy - half;
+    if x < -128 || y < -128 || x > WIDTH || y > HEIGHT {
+        return;
+    }
+    let mut disc = ObjectAffine::new(
+        SpriteVram::from(sprites::FLASH.sprite(0)),
+        AffineMatrix::from_scale(vec2(inv_x, inv_y)).into(),
+        mode,
+    );
+    if age >= 6 {
+        disc.set_graphics_mode(GraphicsMode::AlphaBlending);
+    }
+    disc.set_pos((x, y))
+        .set_priority(Priority::P0)
+        .show(frame);
 }
 
 pub(crate) fn boom_sheet(frame: i16) -> usize {
@@ -1612,6 +1974,80 @@ pub(crate) fn draw_noise(frame: &mut agb::display::GraphicsFrame, age: i32) {
     }
 }
 
+struct Look {
+    sensor: u8,
+    applied: u8,
+    sky: u16,
+    sky_applied: u16,
+}
+
+struct LookCell(core::cell::UnsafeCell<Look>);
+unsafe impl Sync for LookCell {}
+
+static LOOK: LookCell = LookCell(core::cell::UnsafeCell::new(Look {
+    sensor: 0,
+    applied: 255,
+    sky: 0,
+    sky_applied: 0xffff,
+}));
+
+struct Detail(core::cell::UnsafeCell<bool>);
+unsafe impl Sync for Detail {}
+
+static DETAIL: Detail = Detail(core::cell::UnsafeCell::new(false));
+
+pub(crate) fn set_detail(on: bool) {
+    unsafe { *DETAIL.0.get() = on }
+}
+
+fn detail_on() -> bool {
+    unsafe { *DETAIL.0.get() }
+}
+
+fn sensor_tag(sensor: Sensor) -> u8 {
+    match sensor {
+        Sensor::Day => 0,
+        Sensor::Night => 1,
+        Sensor::Heat => 2,
+        Sensor::Ir => 3,
+        Sensor::Winter => 4,
+    }
+}
+
+fn sensor_from(tag: u8) -> Sensor {
+    match tag {
+        1 => Sensor::Night,
+        2 => Sensor::Heat,
+        3 => Sensor::Ir,
+        4 => Sensor::Winter,
+        _ => Sensor::Day,
+    }
+}
+
+/// Remember the glass. The vblank handler is what actually writes it.
+pub(crate) fn queue_look(sensor: Sensor, sky: Rgb15) {
+    unsafe {
+        let look = &mut *LOOK.0.get();
+        look.sensor = sensor_tag(sensor);
+        look.sky = sky.0;
+    }
+}
+
+fn flush_look() {
+    unsafe {
+        let look = &mut *LOOK.0.get();
+        if look.applied != look.sensor {
+            paint_sensor(sensor_from(look.sensor));
+            look.applied = look.sensor;
+        }
+        if look.sky_applied != look.sky {
+            let ram = 0x0500_0000 as *mut u16;
+            ram.write_volatile(look.sky);
+            look.sky_applied = look.sky;
+        }
+    }
+}
+
 /// The field through the glass. Temperature is not the tile's brightness:
 /// grass stays cold, and only bodies are painted hot.
 pub(crate) fn paint_sensor(sensor: Sensor) {
@@ -1681,6 +2117,9 @@ pub(crate) fn nvg_ground(colour: u16) -> u16 {
     let mut lit = (9 + y * 2 / 3).clamp(8, 26);
     if b > r + 2 && b > g {
         lit = (lit - 5).max(6);
+    } else if g >= r && g >= b {
+        // Crowns were falling into the black end of the glass.
+        lit = (lit + 6).min(24);
     } else if r > g && r > b {
         lit = (lit + 2).min(26);
     }
@@ -1697,6 +2136,223 @@ pub(crate) struct BodyPals {
 pub(crate) struct BodyHold(core::cell::UnsafeCell<Option<BodyPals>>);
 unsafe impl Sync for BodyHold {}
 pub(crate) static BODY_PALS: BodyHold = BodyHold(core::cell::UnsafeCell::new(None));
+
+struct SheetGlass {
+    tank: Option<PaletteVram>,
+    truck: Option<PaletteVram>,
+    rig: Option<PaletteVram>,
+    bunker: Option<PaletteVram>,
+    pill: Option<PaletteVram>,
+    tree: Option<PaletteVram>,
+    flame: Option<PaletteVram>,
+}
+
+struct SheetHold(core::cell::UnsafeCell<Option<(u8, SheetGlass)>>);
+unsafe impl Sync for SheetHold {}
+static SHEETS: SheetHold = SheetHold(core::cell::UnsafeCell::new(None));
+
+fn on_sheet(sprite: &'static Sprite, tag: &agb::display::object::Tag) -> bool {
+    let sprites = tag.sprites();
+    let start = sprites.as_ptr() as usize;
+    let end = start + sprites.len() * core::mem::size_of::<Sprite>();
+    let at = sprite as *const Sprite as usize;
+    at >= start && at < end
+}
+
+fn bank_with(mark: Rgb, also: Rgb, absent: Option<Rgb>) -> Option<usize> {
+    let needle = mark.to_rgb15().0;
+    let other = also.to_rgb15().0;
+    let skip = absent.map(|colour| colour.to_rgb15().0);
+    unsafe {
+        let ram = 0x0500_0200 as *const u16;
+        for bank in 0..16 {
+            let mut saw_mark = false;
+            let mut saw_other = false;
+            let mut saw_skip = false;
+            for index in 1..16 {
+                let colour = ram.add(bank * 16 + index).read_volatile();
+                saw_mark |= colour == needle;
+                saw_other |= colour == other;
+                if let Some(skip) = skip {
+                    saw_skip |= colour == skip;
+                }
+            }
+            if saw_mark && saw_other && !saw_skip {
+                return Some(bank);
+            }
+        }
+    }
+    None
+}
+
+fn bake_bank(bank: usize, map: fn(u16) -> u16) -> Palette16 {
+    let mut colours = [Rgb15(0); 16];
+    unsafe {
+        let ram = 0x0500_0200 as *const u16;
+        for index in 1..16 {
+            colours[index] = Rgb15(map(ram.add(bank * 16 + index).read_volatile()));
+        }
+    }
+    Palette16::new(colours)
+}
+
+/// A crown in heat stays cold, but light enough to read on the black field.
+fn cold_plant(colour: u16) -> u16 {
+    let y = luma(colour);
+    let v = (7 + y / 4).clamp(7, 14) as u16;
+    (v / 2) | (1 << 5) | (v << 10)
+}
+
+fn plant_map(sensor: Sensor) -> fn(u16) -> u16 {
+    match sensor {
+        Sensor::Night => nvg_body,
+        Sensor::Ir => ir_body,
+        _ => cold_plant,
+    }
+}
+
+fn body_map(sensor: Sensor) -> fn(u16) -> u16 {
+    match sensor {
+        Sensor::Night => nvg_body,
+        Sensor::Ir => ir_body,
+        _ => heat_body,
+    }
+}
+
+/// Fire through the glass. Night is phosphor, heat is white-hot, the grey sight is a white bloom.
+fn flame_heat(colour: u16) -> u16 {
+    let y = luma(colour);
+    let v = (20 + y / 2).clamp(20, 31) as u16;
+    let g = if y > 18 { v - 2 } else { v / 3 };
+    v | (g << 5) | ((v / 3) << 10)
+}
+
+fn flame_ir(colour: u16) -> u16 {
+    let y = luma(colour);
+    let v = (26 + y / 5).clamp(26, 31) as u16;
+    v | (v << 5) | (v << 10)
+}
+
+fn flame_map(sensor: Sensor) -> fn(u16) -> u16 {
+    match sensor {
+        Sensor::Night => nvg_body,
+        Sensor::Ir => flame_ir,
+        _ => flame_heat,
+    }
+}
+
+fn take_sheet(bank: Option<usize>, map: fn(u16) -> u16) -> Option<PaletteVram> {
+    let bank = bank?;
+    PaletteVramSingle::try_allocate_new(&bake_bank(bank, map))
+        .ok()
+        .map(|palette| palette.palette())
+}
+
+fn load_sheets(sensor: Sensor) -> SheetGlass {
+    // Touch the sheets so their real palettes are in object memory before the search.
+    let _ = SpriteVram::from(sprites::TANK_TOP.sprite(0));
+    let _ = SpriteVram::from(sprites::TRUCK.sprite(0));
+    let _ = SpriteVram::from(sprites::TRUCK_NEAR.sprite(0));
+    let _ = SpriteVram::from(sprites::TRUCK_TOP.sprite(0));
+    let _ = SpriteVram::from(sprites::BUNKER.sprite(0));
+    let _ = SpriteVram::from(sprites::BUNKER_NEAR.sprite(0));
+    let _ = SpriteVram::from(sprites::BUNKER_TOP.sprite(0));
+    let _ = SpriteVram::from(sprites::GROVE.sprite(0));
+    let _ = SpriteVram::from(sprites::BOOM.sprite(0));
+    let bodies = body_map(sensor);
+    let plants = plant_map(sensor);
+    let flames = flame_map(sensor);
+    // The side sheet is the five earth colours. The plan adds the dark greens,
+    // so a bank without them is the side truck on its own.
+    let rig_bank = bank_with(
+        Rgb::new(112, 88, 48),
+        Rgb::new(168, 200, 200),
+        Some(Rgb::new(40, 56, 32)),
+    );
+    let top_bank = bank_with(Rgb::new(40, 56, 32), Rgb::new(112, 88, 48), None).or(rig_bank);
+    let truck = take_sheet(top_bank, bodies);
+    let rig = if rig_bank.is_some() && rig_bank != top_bank {
+        take_sheet(rig_bank, bodies)
+    } else {
+        truck.clone()
+    };
+    // Violet slit is only on the side sheet. The plan adds a dark green the side lacks.
+    let pill_bank = bank_with(Rgb::new(56, 0, 184), Rgb::new(184, 176, 144), None);
+    let dome_bank = bank_with(Rgb::new(72, 96, 48), Rgb::new(40, 56, 64), None).or(pill_bank);
+    let bunker = take_sheet(dome_bank, bodies);
+    let pill = if pill_bank.is_some() && pill_bank != dome_bank {
+        take_sheet(pill_bank, bodies)
+    } else {
+        bunker.clone()
+    };
+    SheetGlass {
+        tank: take_sheet(
+            bank_with(Rgb::new(240, 240, 16), Rgb::new(224, 208, 0), None),
+            bodies,
+        ),
+        truck,
+        rig,
+        bunker,
+        pill,
+        tree: take_sheet(
+            bank_with(Rgb::new(72, 96, 48), Rgb::new(24, 24, 16), None),
+            plants,
+        ),
+        flame: take_sheet(
+            bank_with(Rgb::new(200, 40, 32), Rgb::new(248, 208, 32), None),
+            flames,
+        ),
+    }
+}
+
+fn sheet_set(sensor: Sensor) -> Option<SheetGlass> {
+    if matches!(sensor, Sensor::Day | Sensor::Winter) {
+        return None;
+    }
+    let tag = sensor_tag(sensor);
+    unsafe {
+        let hold = &mut *SHEETS.0.get();
+        if hold.as_ref().is_none_or(|stored| stored.0 != tag) {
+            *hold = None;
+            *hold = Some((tag, load_sheets(sensor)));
+        }
+        hold.as_ref().map(|stored| SheetGlass {
+            tank: stored.1.tank.clone(),
+            truck: stored.1.truck.clone(),
+            rig: stored.1.rig.clone(),
+            bunker: stored.1.bunker.clone(),
+            pill: stored.1.pill.clone(),
+            tree: stored.1.tree.clone(),
+            flame: stored.1.flame.clone(),
+        })
+    }
+}
+
+/// Overhead plans and crowns keep their own colour indices, so the glass is
+/// baked from that sheet rather than from the first sprite palette.
+fn sheet_palette(sprite: &'static Sprite, sensor: Sensor) -> Option<PaletteVram> {
+    let glass = sheet_set(sensor)?;
+    if on_sheet(sprite, &sprites::TANK_TOP) {
+        glass.tank
+    } else if on_sheet(sprite, &sprites::TRUCK)
+        || on_sheet(sprite, &sprites::TRUCK_NEAR)
+        || on_sheet(sprite, &sprites::TRUCK_TOP)
+    {
+        if on_sheet(sprite, &sprites::TRUCK_TOP) {
+            glass.truck
+        } else {
+            glass.rig
+        }
+    } else if on_sheet(sprite, &sprites::BUNKER_TOP) {
+        glass.bunker
+    } else if on_sheet(sprite, &sprites::BUNKER) || on_sheet(sprite, &sprites::BUNKER_NEAR) {
+        glass.pill
+    } else if on_sheet(sprite, &sprites::GROVE) || on_sheet(sprite, &sprites::BUSH) {
+        glass.tree
+    } else {
+        None
+    }
+}
 
 pub(crate) fn body_palette(sensor: Sensor) -> Option<PaletteVram> {
     let pals = unsafe {
@@ -1744,15 +2400,10 @@ pub(crate) fn bake_body(sensor: Sensor) -> Palette16 {
 
 pub(crate) fn heat_body(colour: u16) -> u16 {
     let y = luma(colour);
-    if y < 5 {
-        8 | (1 << 5)
-    } else if y < 12 {
-        26 | (8 << 5) | (1 << 10)
-    } else if y < 20 {
-        31 | (18 << 5) | (3 << 10)
-    } else {
-        31 | (31 << 5) | (26 << 10)
-    }
+    // A hot ramp, not four flat bands, so a roof and a wheel stay different.
+    let hot = (6 + y).clamp(6, 31) as u16;
+    let g = (hot / 4).min(16);
+    hot | (g << 5) | (1 << 10)
 }
 
 pub(crate) fn ir_body(colour: u16) -> u16 {
@@ -2198,6 +2849,7 @@ pub(crate) fn draw_world(
 ) {
     let floor = sky_bottom(horizon, world.alt);
     let ground_y = ground_line(horizon, world.alt, cockpit);
+    draw_lase(frame, world, sin_r, cos_r, horizon, cockpit);
     for boom in &world.booms {
         if !boom.alive {
             continue;
@@ -2208,6 +2860,22 @@ pub(crate) fn draw_world(
             continue;
         };
         if !in_view(sx, sy, cockpit) {
+            continue;
+        }
+        // Guidance: a white disc on the ground, wider than the kill circle,
+        // squashed so it lies on the field instead of standing up as fire.
+        if world.mode == Mode::Guide && boom.radius > 0 && boom.z <= 2 << 8 {
+            if boom.frame < 18 && sy >= floor {
+                show_blast(
+                    frame,
+                    sx,
+                    sy,
+                    (sy - horizon).max(1),
+                    world.alt,
+                    boom.radius as i32,
+                    boom.frame as i32,
+                );
+            }
             continue;
         }
         let frame_index = boom_sheet(boom.frame);
@@ -2312,11 +2980,11 @@ pub(crate) fn draw_world(
             dx as i64 * dx as i64 + dy as i64 * dy as i64 + dz as i64 * dz as i64,
         )
         .max(1);
-        // A quad stays at least 16px. A wing is wider, so the shape survives the horizon.
+        // Neither craft is drawn past its own art, so a close pass shows the pixels.
         let (src, pixels) = if foe.wing {
-            (32, (32 * 88 / dist as i32).clamp(22, 40))
+            (32, (32 * 88 / dist as i32).clamp(12, 32))
         } else {
-            (16, (16 * 96 / dist as i32).clamp(16, 28))
+            (16, (16 * 96 / dist as i32).clamp(8, 16))
         };
         let half = pixels / 2;
         if cockpit
@@ -2352,11 +3020,8 @@ pub(crate) fn draw_world(
         ) else {
             continue;
         };
-        if !in_view(sx, sy, cockpit) || sy < floor {
-            continue;
-        }
-        let man_px = sprite_pixels((sy - horizon).max(1), world.alt, 16, 12, 28);
-        if !body_on_ground(sy, man_px, 6, ground_y, cockpit) {
+        let man_px = ground_span((sy - horizon).max(1), world.alt, 16);
+        if !actor_on_glass(sx, sy, man_px, floor, cockpit) {
             continue;
         }
         if marks_on_ground(sy, ground_y, cockpit) {
@@ -2389,11 +3054,8 @@ pub(crate) fn draw_world(
         ) else {
             continue;
         };
-        if !in_view(sx, sy, cockpit) || sy < floor {
-            continue;
-        }
-        let truck_px = sprite_pixels((sy - horizon).max(1), world.alt, 20, 16, 32);
-        if !body_on_ground(sy, truck_px, 14, ground_y, cockpit) {
+        let truck_px = ground_span((sy - horizon).max(1), world.alt, 12);
+        if !actor_on_glass(sx, sy, truck_px, floor, cockpit) {
             continue;
         }
         if marks_on_ground(sy, ground_y, cockpit) {
@@ -2422,11 +3084,8 @@ pub(crate) fn draw_world(
         ) else {
             continue;
         };
-        if !in_view(sx, sy, cockpit) || sy < floor {
-            continue;
-        }
-        let tank_px = sprite_pixels((sy - horizon).max(1), world.alt, 22, 18, 34);
-        if !body_on_ground(sy, tank_px, 11, ground_y, cockpit) {
+        let tank_px = ground_span((sy - horizon).max(1), world.alt, 12);
+        if !actor_on_glass(sx, sy, tank_px, floor, cockpit) {
             continue;
         }
         if marks_on_ground(sy, ground_y, cockpit) {
@@ -2454,11 +3113,8 @@ pub(crate) fn draw_world(
         ) else {
             continue;
         };
-        if !in_view(sx, sy, cockpit) || sy < floor {
-            continue;
-        }
-        let bunker_px = sprite_pixels((sy - horizon).max(1), world.alt, 18, 14, 30);
-        if !body_on_ground(sy, bunker_px, 8, ground_y, cockpit) {
+        let bunker_px = ground_span((sy - horizon).max(1), world.alt, 14);
+        if !actor_on_glass(sx, sy, bunker_px, floor, cockpit) {
             continue;
         }
         if marks_on_ground(sy, ground_y, cockpit) {
@@ -2482,6 +3138,269 @@ pub(crate) fn draw_world(
     draw_gate(frame, world, sin_r, cos_r, horizon, cockpit);
     draw_sites(frame, world, sin_r, cos_r, horizon, cockpit);
     draw_aa_guns(frame, world, sin_r, cos_r, horizon, cockpit, sensor);
+    draw_grove(frame, world, sin_r, cos_r, horizon, floor, cockpit, sensor);
+}
+
+fn crown_spot(
+    world: &World,
+    sin_r: i32,
+    cos_r: i32,
+    horizon: i32,
+    floor: i32,
+    cockpit: bool,
+    tx: i32,
+    ty: i32,
+    keep: bool,
+) -> Option<(i32, i32, i32, u8)> {
+    let tile = world.ground_at(tx, ty);
+    if tile != T_TREE && tile != T_BUSH {
+        return None;
+    }
+    let wx = (tx * 8 + 4) << 8;
+    let wy = (ty * 8 + 4) << 8;
+    let (sx, sy) = project(
+        world.x, world.y, world.alt, sin_r, cos_r, horizon, wx, wy, 0,
+    )?;
+    let tall = if tile == T_BUSH { 8 } else { 20 };
+    let span = ground_span((sy - horizon).max(1), world.alt, tall);
+    let slack = if keep { 16 } else { 0 };
+    let floor_lim = floor - slack;
+    if sy < floor_lim {
+        return None;
+    }
+    let view_bot = if cockpit { VIEW_Y + VIEW_H } else { HEIGHT };
+    if sy - span >= view_bot + slack {
+        return None;
+    }
+    if cockpit && (sx < VIEW_X - slack || sx >= VIEW_X + VIEW_W + slack) {
+        return None;
+    }
+    Some((sx, sy, span, tile))
+}
+
+fn fill_grove(
+    world: &World,
+    sin_r: i32,
+    cos_r: i32,
+    horizon: i32,
+    floor: i32,
+    slots: &mut [(i32, i32); 6],
+) {
+    let tx0 = tile_of(world.x);
+    let ty0 = tile_of(world.y);
+    let cx0 = tx0.div_euclid(3);
+    let cy0 = ty0.div_euclid(3);
+    let mut picks = [(0i32, 0i32, i32::MAX); 6];
+    let span_y = (HEIGHT - floor).max(1);
+    for cy in (cy0 - 18)..=(cy0 + 18) {
+        for cx in (cx0 - 12)..=(cx0 + 12) {
+            if hash(cx, cy.wrapping_add(17)) % 6 != 0 {
+                continue;
+            }
+            let tx = cx * 3 + 1;
+            let ty = cy * 3 + 1;
+            if grove_held(tx, ty, slots) {
+                continue;
+            }
+            let grown = terrain(world.level, tx, ty);
+            if grown != T_TREE && grown != T_BUSH {
+                continue;
+            }
+            let wx = (tx * 8 + 4) << 8;
+            let wy = (ty * 8 + 4) << 8;
+            let rel_x = delta(wx, world.x);
+            let rel_y = delta(wy, world.y);
+            let fwd = ((rel_x as i64 * sin_r as i64) - (rel_y as i64 * cos_r as i64)) >> 8;
+            if fwd < 256 {
+                continue;
+            }
+            let right = ((rel_x as i64 * cos_r as i64) + (rel_y as i64 * sin_r as i64)) >> 8;
+            if right.abs() * (FOCAL as i64) > fwd * 150 {
+                continue;
+            }
+            let sy = horizon as i64
+                + (world.alt as i64) * (FOCAL as i64) * (FLOOR_ZOOM as i64) / fwd;
+            if sy < floor as i64 || sy > (HEIGHT + 80) as i64 {
+                continue;
+            }
+            let sx = (WIDTH as i64) / 2 + right * (FOCAL as i64) / fwd;
+            let col = if sx < (WIDTH as i64) / 2 { 0 } else { 1 };
+            let row = (((sy as i32 - floor) * 3) / span_y).clamp(0, 2);
+            let cell = (row * 2 + col) as usize;
+            let cx = if col == 0 { WIDTH / 4 } else { WIDTH * 3 / 4 };
+            let cy = floor + (row * 2 + 1) * span_y / 6;
+            let score = (sx as i32 - cx).abs() + (sy as i32 - cy).abs();
+            if score < picks[cell].2 {
+                picks[cell] = (tx, ty, score);
+            }
+        }
+    }
+    for pick in picks {
+        if pick.2 == i32::MAX {
+            continue;
+        }
+        if crown_spot(
+            world, sin_r, cos_r, horizon, floor, false, pick.0, pick.1, false,
+        )
+        .is_none()
+        {
+            continue;
+        }
+        if let Some(slot) = slots.iter_mut().find(|slot| slot.1 == i32::MIN) {
+            *slot = (pick.0, pick.1);
+        }
+    }
+}
+
+struct GroveHold(core::cell::UnsafeCell<[(i32, i32); 6]>);
+unsafe impl Sync for GroveHold {}
+static GROVE_HOLD: GroveHold = GroveHold(core::cell::UnsafeCell::new([(0, i32::MIN); 6]));
+
+fn grove_held(tx: i32, ty: i32, slots: &[(i32, i32); 6]) -> bool {
+    slots.iter().any(|slot| slot.0 == tx && slot.1 == ty)
+}
+
+/// Six crowns, two across and three deep. A crown stays until it leaves
+/// the glass, so a neighbour nearer the sight does not take its place.
+fn draw_grove(
+    frame: &mut agb::display::GraphicsFrame,
+    world: &World,
+    sin_r: i32,
+    cos_r: i32,
+    horizon: i32,
+    floor: i32,
+    cockpit: bool,
+    sensor: Sensor,
+) {
+    let slots = unsafe { &mut *GROVE_HOLD.0.get() };
+    for slot in slots.iter_mut() {
+        if slot.1 == i32::MIN {
+            continue;
+        }
+        if crown_spot(world, sin_r, cos_r, horizon, floor, cockpit, slot.0, slot.1, true).is_none()
+        {
+            *slot = (0, i32::MIN);
+        }
+    }
+    if slots.iter().any(|slot| slot.1 == i32::MIN) {
+        fill_grove(world, sin_r, cos_r, horizon, floor, slots);
+    }
+    // Near first, so a closer crown sits in front of the one behind it.
+    let mut order = [(0i32, 0usize); 6];
+    let mut count = 0;
+    for (index, slot) in slots.iter().enumerate() {
+        if slot.1 == i32::MIN {
+            continue;
+        }
+        let Some((_, sy, _, _)) =
+            crown_spot(world, sin_r, cos_r, horizon, floor, cockpit, slot.0, slot.1, true)
+        else {
+            continue;
+        };
+        order[count] = (sy, index);
+        count += 1;
+    }
+    for a in 0..count {
+        for b in (a + 1)..count {
+            if order[b].0 > order[a].0 {
+                order.swap(a, b);
+            }
+        }
+    }
+    for n in 0..count {
+        let (tx, ty) = slots[order[n].1];
+        let Some((sx, sy, _, tile)) =
+            crown_spot(world, sin_r, cos_r, horizon, floor, cockpit, tx, ty, true)
+        else {
+            continue;
+        };
+        let burning = world
+            .burns
+            .iter()
+            .any(|burn| burn.alive && burn.tx == tx && burn.ty == ty);
+        let plan = nadir_on() > 0 && horizon < 12;
+        if tile == T_BUSH {
+            let span = ground_span((sy - horizon).max(1), world.alt, 8);
+            if burning {
+                let fy = if plan { sy - span / 2 } else { sy - span - 4 };
+                show_flame(
+                    frame,
+                    sprites::BOOM.sprite(((world.age / 5) as usize + tx as usize) % 3),
+                    sx - 8,
+                    fy,
+                    sensor,
+                );
+            }
+            let bush_sheet = if matches!(sensor, Sensor::Ir) {
+                sprites::BUSH_IR.sprite((hash(tx, ty) % 2) as usize)
+            } else {
+                sprites::BUSH.sprite((hash(tx, ty) % 2) as usize)
+            };
+            show_figure(
+                frame,
+                bush_sheet,
+                sx,
+                sy,
+                16,
+                16,
+                if plan { 11 } else { 10 },
+                14,
+                span,
+                plan,
+                sensor,
+                false,
+            );
+        } else if plan {
+            let span = ground_span((sy - horizon).max(1), world.alt, 10);
+            if burning {
+                show_flame(
+                    frame,
+                    sprites::BOOM.sprite(((world.age / 5) as usize + tx as usize) % 3),
+                    sx - 8,
+                    sy - span / 2,
+                    sensor,
+                );
+            }
+            let crown = if matches!(sensor, Sensor::Ir) {
+                sprites::GROVE_IR.sprite(3)
+            } else {
+                sprites::GROVE.sprite(3)
+            };
+            show_figure(
+                frame, crown, sx, sy, 16, 32, 11, 16, span, true, sensor, false,
+            );
+        } else {
+            let span = ground_span((sy - horizon).max(1), world.alt, 20);
+            if burning {
+                show_flame(
+                    frame,
+                    sprites::BOOM.sprite(((world.age / 5) as usize + tx as usize) % 3),
+                    sx - 8,
+                    sy - span * 2 / 3 - 8,
+                    sensor,
+                );
+            }
+            let tree_sheet = if matches!(sensor, Sensor::Ir) {
+                sprites::GROVE_IR.sprite((hash(tx, ty) % 3) as usize)
+            } else {
+                sprites::GROVE.sprite((hash(tx, ty) % 3) as usize)
+            };
+            show_figure(
+                frame,
+                tree_sheet,
+                sx,
+                sy,
+                16,
+                32,
+                28,
+                30,
+                span,
+                false,
+                sensor,
+                false,
+            );
+        }
+    }
 }
 
 /// Two dark posts and a lintel. The opening is the mission.
@@ -2604,20 +3523,16 @@ pub(crate) fn draw_sites(
         if cockpit && !in_view(sx, sy, true) {
             return;
         }
-        // The art is 32px. Scale is around the corner, so the base is planted
-        // on the ground point and the house grows as the glass gets closer.
         let drop = (sy - horizon).max(1);
-        let pixels = sprite_pixels(drop, world.alt, 32, 10, 56);
-        let x = sx - pixels / 2;
-        let y = sy - pixels;
-        ObjectAffine::new(
-            SpriteVram::from(sprites::HQ.sprite(0)),
-            actor_matrix(Num::<i32, 8>::new(32) / Num::new(pixels)).into(),
-            AffineMode::Affine,
-        )
-        .set_pos((x, y))
-        .set_priority(Priority::P0)
-        .show(frame);
+        let span = ground_span(drop, world.alt, 20);
+        let (sprite, native, ink, foot) = if detail_on() && span >= 16 {
+            (sprites::HQ_NEAR.sprite(0), 64, 46, 57)
+        } else {
+            (sprites::HQ.sprite(0), 32, 12, 30)
+        };
+        show_figure(
+            frame, sprite, sx, sy, native, native, ink, foot, span, false, Sensor::Day, false,
+        );
     }
 }
 
@@ -2643,11 +3558,8 @@ pub(crate) fn draw_aa_guns(
         ) else {
             continue;
         };
-        if cockpit && (!in_view(sx, sy, true) || sy < floor) {
-            continue;
-        }
-        let gun_px = sprite_pixels((sy - horizon).max(1), world.alt, 18, 14, 30);
-        if !body_on_ground(sy, gun_px, 8, ground_line(horizon, world.alt, cockpit), cockpit) {
+        let gun_px = ground_span((sy - horizon).max(1), world.alt, 14);
+        if !actor_on_glass(sx, sy, gun_px, floor, cockpit) {
             continue;
         }
         let bunker = Bunker {

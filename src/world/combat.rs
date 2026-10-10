@@ -81,6 +81,48 @@ impl super::World {
         best.map(|(index, _)| index)
     }
 
+    /// The crosshair on the body, not the feet. The figure is drawn above the
+    /// ground point, so a round aimed at the picture has to go to the man.
+    pub(crate) fn man_under_sight(&self) -> Option<usize> {
+        let (sin_r, cos_r) = self.heading();
+        let horizon = self.horizon();
+        let aim_x = WIDTH / 2;
+        let aim_y = VIEW_Y + VIEW_H / 2;
+        let alt_px = (self.alt >> 8).max(1);
+        let mut best: Option<(usize, i32)> = None;
+        for (index, soldier) in self.soldiers.iter().enumerate() {
+            if !soldier.alive {
+                continue;
+            }
+            let Some((sx, sy)) = project(
+                self.x,
+                self.y,
+                self.alt,
+                sin_r,
+                cos_r,
+                horizon,
+                soldier.x,
+                soldier.y,
+                0,
+            ) else {
+                continue;
+            };
+            let drop = (sy - horizon).max(1);
+            let span = (16 * drop / (alt_px * FLOOR_ZOOM)).max(6);
+            let half = (span / 2).clamp(4, 14);
+            let dx = (sx - aim_x).abs();
+            let above = sy - aim_y;
+            if dx > half || above < -4 || above > span {
+                continue;
+            }
+            let dist = dx * dx + (above - span / 2) * (above - span / 2);
+            if best.is_none_or(|(_, near)| dist < near) {
+                best = Some((index, dist));
+            }
+        }
+        best.map(|(index, _)| index)
+    }
+
     /// A burst along the nose to the ground. It hurts people and trucks, not the ground.
     /// A hostile quad in the crosshair is the target instead, so the round meets that picture.
     pub(crate) fn try_gun(&mut self) -> bool {
@@ -88,6 +130,9 @@ impl super::World {
         let (nx, ny, nz) = if let Some(index) = self.foe_under_sight() {
             let foe = &self.foes[index];
             (foe.x, foe.y, foe.z)
+        } else if let Some(index) = self.man_under_sight() {
+            let man = &self.soldiers[index];
+            (man.x, man.y, 0)
         } else {
             self.nose_ground(sin_r, cos_r)
         };
@@ -332,6 +377,8 @@ impl super::World {
         let y = self.shots[index].y;
         let z = self.shots[index].z;
         let life = self.shots[index].life;
+        let prev_x = x - self.shots[index].vx;
+        let prev_y = y - self.shots[index].vy;
         if z > 16 << 8 && life < 10 {
             return;
         }
@@ -351,10 +398,14 @@ impl super::World {
             return;
         }
         let mut man = None;
-        for (slot, soldier) in self.soldiers.iter().enumerate() {
-            if soldier.alive && dist2_px(x, y, soldier.x, soldier.y) <= 8 * 8 {
-                man = Some(slot);
-                break;
+        // Only once the round is down among them. A high pass is not a hit,
+        // and the step is long enough that a single sample can jump a man.
+        if z <= 12 << 8 {
+            for (slot, soldier) in self.soldiers.iter().enumerate() {
+                if soldier.alive && near_step(soldier.x, soldier.y, prev_x, prev_y, x, y, 10) {
+                    man = Some(slot);
+                    break;
+                }
             }
         }
         if let Some(slot) = man {
@@ -413,7 +464,7 @@ impl super::World {
         let y = self.foes[index].y;
         let z = self.foes[index].z;
         self.foes[index].alive = false;
-        self.add_boom(x, y, z);
+        self.add_boom(x, y, z, 0);
         self.score += 50;
         self.sfx |= SFX_BOOM;
         if matches!(task_of(self.level), Task::Swarm | Task::Cover) && self.targets > 0 {
@@ -527,12 +578,13 @@ impl super::World {
     }
 
     pub(crate) fn hurt_soldier(&mut self, bg: &mut AffineBackground, index: usize) {
-        if self.soldiers[index].hp > 0 {
-            self.soldiers[index].hp -= 1;
-        }
-        if self.soldiers[index].hp > 0 {
+        // A rifleman drops in a short burst. An officer takes the longer one.
+        let bite = if self.soldiers[index].officer { 3 } else { 4 };
+        if self.soldiers[index].hp > bite {
+            self.soldiers[index].hp -= bite;
             return;
         }
+        self.soldiers[index].hp = 0;
         let x = self.soldiers[index].x;
         let y = self.soldiers[index].y;
         let hx = self.soldiers[index].home_tx;
@@ -645,7 +697,7 @@ impl super::World {
             if self.hull < 0 {
                 self.hull = 0;
             }
-            self.add_boom(self.x, self.y, z);
+            self.add_boom(self.x, self.y, z, 0);
             return;
         }
         if life > 28 || z > 48 << 8 || z < 0 {
@@ -687,6 +739,53 @@ impl super::World {
         }
     }
 
+    /// A rig follows a road. Off the road it keeps the facing it has, instead of
+    /// reversing every frame and spinning in place.
+    fn keep_on_road(&mut self, index: usize, truck: bool, step: i32) {
+        let (x, y, dir, vertical) = if truck {
+            let rig = &self.trucks[index];
+            (rig.x, rig.y, rig.dir, rig.vertical)
+        } else {
+            let rig = &self.tanks[index];
+            (rig.x, rig.y, rig.dir, rig.vertical)
+        };
+        if dir == 0 {
+            return;
+        }
+        let probe = dir.signum() * (10 << 8);
+        let (ax, ay) = if vertical { (x, y + probe) } else { (x + probe, y) };
+        if self.ground_at(tile_of(ax), tile_of(ay)) == T_ROAD {
+            return;
+        }
+        if truck {
+            if vertical {
+                self.trucks[index].y -= step;
+            } else {
+                self.trucks[index].x -= step;
+            }
+        } else if vertical {
+            self.tanks[index].y -= step;
+        } else {
+            self.tanks[index].x -= step;
+        }
+        let (x, y) = if truck {
+            (self.trucks[index].x, self.trucks[index].y)
+        } else {
+            (self.tanks[index].x, self.tanks[index].y)
+        };
+        let back = -dir.signum() * (10 << 8);
+        let (bx, by) = if vertical { (x, y + back) } else { (x + back, y) };
+        let here = self.ground_at(tile_of(x), tile_of(y)) == T_ROAD;
+        let behind = self.ground_at(tile_of(bx), tile_of(by)) == T_ROAD;
+        if here || behind {
+            if truck {
+                self.trucks[index].dir = -self.trucks[index].dir;
+            } else {
+                self.tanks[index].dir = -self.tanks[index].dir;
+            }
+        }
+    }
+
     pub(crate) fn update_trucks(&mut self) {
         for index in 0..MAX_TRUCKS {
             if !self.trucks[index].alive {
@@ -710,20 +809,7 @@ impl super::World {
             if self.trucks[index].goal {
                 continue;
             }
-            let probe = ground_step(self.trucks[index].dir).signum() * (10 << 8);
-            let ahead_x = if self.trucks[index].vertical {
-                self.trucks[index].x
-            } else {
-                self.trucks[index].x + probe
-            };
-            let ahead_y = if self.trucks[index].vertical {
-                self.trucks[index].y + probe
-            } else {
-                self.trucks[index].y
-            };
-            if self.ground_at(tile_of(ahead_x), tile_of(ahead_y)) != T_ROAD {
-                self.trucks[index].dir = -self.trucks[index].dir;
-            }
+            self.keep_on_road(index, true, step);
         }
     }
 
@@ -738,20 +824,7 @@ impl super::World {
             } else {
                 self.tanks[index].x += step;
             }
-            let probe = step.signum() * (10 << 8);
-            let ahead_x = if self.tanks[index].vertical {
-                self.tanks[index].x
-            } else {
-                self.tanks[index].x + probe
-            };
-            let ahead_y = if self.tanks[index].vertical {
-                self.tanks[index].y + probe
-            } else {
-                self.tanks[index].y
-            };
-            if self.ground_at(tile_of(ahead_x), tile_of(ahead_y)) != T_ROAD {
-                self.tanks[index].dir = -self.tanks[index].dir;
-            }
+            self.keep_on_road(index, false, step);
         }
     }
 
@@ -798,7 +871,7 @@ impl super::World {
     }
 
     pub(crate) fn explode(&mut self, bg: &mut AffineBackground, x: i32, y: i32, radius: i32, depth: i32, kind: u8) {
-        self.add_boom(x, y, 0);
+        self.add_boom(x, y, 0, radius);
         self.damage_tiles(bg, x, y, radius);
         let reach = radius * radius;
         let mut graves = [(0i32, 0i32); MAX_SOLDIERS + MAX_TRUCKS];
@@ -949,15 +1022,68 @@ impl super::World {
                 if dx * dx + dy * dy > reach {
                     continue;
                 }
-                if self.ground_at(tx, ty) != T_WATER {
-                    self.paint(bg, tx, ty, T_CRATER);
+                let tile = self.ground_at(tx, ty);
+                if tile == T_WATER {
+                    continue;
                 }
+                // On the trunk the tree is gone. Further out it catches, then falls.
+                let gone = radius * radius / 4;
+                if dx * dx + dy * dy > gone && matches!(tile, T_TREE | T_BUSH) {
+                    self.light_tree(bg, tx, ty);
+                    continue;
+                }
+                self.paint(bg, tx, ty, T_CRATER);
+            }
+        }
+    }
+
+    pub(crate) fn light_tree(&mut self, bg: &mut AffineBackground, tx: i32, ty: i32) {
+        if self
+            .burns
+            .iter()
+            .any(|burn| burn.alive && burn.tx == tx && burn.ty == ty)
+        {
+            return;
+        }
+        let Some(slot) = self.burns.iter_mut().find(|burn| !burn.alive) else {
+            self.paint(bg, tx, ty, T_CRATER);
+            return;
+        };
+        *slot = Burn {
+            tx,
+            ty,
+            life: 80,
+            alive: true,
+        };
+    }
+
+    pub(crate) fn update_burns(&mut self, bg: &mut AffineBackground) {
+        for index in 0..MAX_BURNS {
+            if !self.burns[index].alive {
+                continue;
+            }
+            if self.burns[index].life > 0 {
+                self.burns[index].life -= 1;
+                continue;
+            }
+            let tx = self.burns[index].tx;
+            let ty = self.burns[index].ty;
+            self.burns[index].alive = false;
+            if matches!(self.ground_at(tx, ty), T_TREE | T_BUSH) {
+                self.paint(bg, tx, ty, T_CRATER);
             }
         }
     }
 
     pub(crate) fn paint(&mut self, bg: &mut AffineBackground, tx: i32, ty: i32, tile: u8) {
         let previous = self.ground_at(tx, ty);
+        if tile == T_CRATER {
+            for burn in &mut self.burns {
+                if burn.alive && burn.tx == tx && burn.ty == ty {
+                    burn.alive = false;
+                }
+            }
+        }
         self.insert_mark(tx, ty, tile, false);
         let _ = bg;
         self.blit(tx, ty);
@@ -1030,7 +1156,7 @@ impl super::World {
             foe.alive && dist2_px(foe.x, foe.y, self.pad_x, self.pad_y) <= 24 * 24
         });
         if reached {
-            self.add_boom(self.pad_x, self.pad_y, 0);
+            self.add_boom(self.pad_x, self.pad_y, 0, 0);
             self.fail(Why::Base);
         }
     }
@@ -1060,7 +1186,7 @@ impl super::World {
         }
     }
 
-    pub(crate) fn add_boom(&mut self, x: i32, y: i32, z: i32) {
+    pub(crate) fn add_boom(&mut self, x: i32, y: i32, z: i32, radius: i32) {
         let mut slot = 0;
         for (index, boom) in self.booms.iter().enumerate() {
             if !boom.alive {
@@ -1072,17 +1198,42 @@ impl super::World {
             x: wrap_coord(x),
             y: wrap_coord(y),
             z,
+            radius: radius.clamp(0, 120) as i16,
             frame: 0,
             alive: true,
         };
-        // A near blast washes the ground. Far ones stay a spark and do not white the glass.
+        // A near blast clips the sensor, then the picture comes back.
+        // The white disc on the ground is separate and stays.
         let near = dist2_px(self.x, self.y, x, y);
-        if near <= 72 * 72 {
-            let punch: i16 = if near <= 36 * 36 { 12 } else { 6 };
+        if near <= 96 * 96 {
+            let punch: i16 = if near <= 40 * 40 {
+                22
+            } else if near <= 64 * 64 {
+                16
+            } else {
+                10
+            };
             if self.bloom < punch {
                 self.bloom = punch;
             }
         }
         self.sfx |= SFX_BOOM;
     }
+}
+
+/// True when `point` comes within `radius` pixels of the segment.
+fn near_step(px: i32, py: i32, ax: i32, ay: i32, bx: i32, by: i32, radius: i32) -> bool {
+    let abx = bx.wrapping_sub(ax);
+    let aby = by.wrapping_sub(ay);
+    let apx = px.wrapping_sub(ax);
+    let apy = py.wrapping_sub(ay);
+    let ab2 = abx as i64 * abx as i64 + aby as i64 * aby as i64;
+    let t = if ab2 <= 0 {
+        0
+    } else {
+        ((apx as i64 * abx as i64 + apy as i64 * aby as i64) * 256 / ab2).clamp(0, 256)
+    };
+    let cx = ax.wrapping_add(((abx as i64 * t) >> 8) as i32);
+    let cy = ay.wrapping_add(((aby as i64 * t) >> 8) as i32);
+    dist2_px(px, py, cx, cy) <= radius * radius
 }

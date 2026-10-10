@@ -31,7 +31,11 @@ impl super::World {
     }
 
     pub(crate) fn fly(&mut self, input: &ButtonController, bg: &mut AffineBackground) {
-        if self.bloom > 0 {
+        if self.bloom > 16 {
+            if self.age & 1 == 0 {
+                self.bloom -= 1;
+            }
+        } else if self.bloom > 0 {
             self.bloom -= 1;
         }
         if self.recover > 0 {
@@ -84,6 +88,7 @@ impl super::World {
         }
 
         self.update_shots(bg);
+        self.update_burns(bg);
         self.update_trucks();
         self.update_tanks();
         self.check_convoy();
@@ -110,7 +115,6 @@ impl super::World {
             let (nx, ny, _) = self.nose_ground(sin_r, cos_r);
             self.mark_x = nx;
             self.mark_y = ny;
-            self.lay_ground_frame(nx, ny);
             self.guide = GUIDE_WAIT;
             self.sfx |= SFX_MARK;
             self.spent = self.spent.saturating_add(1);
@@ -140,59 +144,6 @@ impl super::World {
                 self.explode(bg, self.mark_x + jitter_x, self.mark_y + jitter_y, 22, 0, KIND_BOMB);
                 self.salvo -= 1;
                 self.salvo_cd = 8;
-            }
-        }
-        if self.guide == 0 && self.salvo == 0 && self.signal_loss() < 16 && !self.falling {
-            let (sin_r, cos_r) = self.heading();
-            let (nx, ny, _) = self.nose_ground(sin_r, cos_r);
-            self.lay_ground_frame(nx, ny);
-        }
-    }
-
-    /// A square of lip tiles on the map, around the ground under the crosshair.
-    /// It stays in the world when the glass moves. Camera brackets do not.
-    pub(crate) fn lay_ground_frame(&mut self, x: i32, y: i32) {
-        let cx = tile_of(x);
-        let cy = tile_of(y);
-        if self.guide_frame_n > 0 && self.guide_cx == cx && self.guide_cy == cy {
-            return;
-        }
-        self.clear_ground_frame();
-        self.guide_cx = cx;
-        self.guide_cy = cy;
-        let mut n = 0;
-        for dy in -2i32..=2 {
-            for dx in -2i32..=2 {
-                if dx.abs() != 2 && dy.abs() != 2 {
-                    continue;
-                }
-                let tx = cx + dx;
-                let ty = cy + dy;
-                if self.ground_at(tx, ty) == T_WATER {
-                    continue;
-                }
-                let was = self.ground_at(tx, ty);
-                self.guide_frame[n] = (tx, ty, was);
-                n += 1;
-                if was != T_LIP {
-                    self.insert_mark(tx, ty, T_LIP, false);
-                    self.blit(tx, ty);
-                }
-            }
-        }
-        self.guide_frame_n = n as u8;
-    }
-
-    pub(crate) fn clear_ground_frame(&mut self) {
-        let n = self.guide_frame_n as usize;
-        self.guide_frame_n = 0;
-        self.guide_cx = i32::MIN;
-        self.guide_cy = i32::MIN;
-        for step in 0..n {
-            let (tx, ty, was) = self.guide_frame[step];
-            if self.ground_at(tx, ty) == T_LIP && was != T_LIP {
-                self.insert_mark(tx, ty, was, false);
-                self.blit(tx, ty);
             }
         }
     }
@@ -371,7 +322,7 @@ impl super::World {
             } else if touching {
                 let _ = self.strike_at(bg, self.x, self.y);
             } else {
-                self.add_boom(self.x, self.y, 0);
+                self.add_boom(self.x, self.y, 0, 0);
             }
             self.falling = false;
             self.vx = 0;
@@ -491,7 +442,7 @@ impl super::World {
         goal: bool,
         objective: bool,
     ) {
-        self.add_boom(x, y, 0);
+        self.add_boom(x, y, 0, 0);
         self.score += points;
         self.claim(officer, truck, goal, objective);
         let tx = tile_of(x);
@@ -584,16 +535,17 @@ impl super::World {
                 continue;
             }
             let distance = dist2_px(self.x, self.y, boom.x, boom.y);
-            // The burst is on the ground. Cruise height is above it, so a
-            // drop under a hover does not wreck the airframe. A low pass does.
+            // The burst is on the ground. A bombing pass stays above it.
+            // Only a drone sitting in the fire, ALT 03 and under, is hit,
+            // and one blast does not finish a full airframe.
             let dz = ((self.alt - boom.z) >> 8).abs();
-            if dz > 8 {
+            if dz > 3 {
                 continue;
             }
-            if distance < 20 * 20 {
-                self.hull -= 40;
-            } else if distance < 36 * 36 {
-                self.hull -= 16;
+            if distance < 16 * 16 {
+                self.hull -= 28;
+            } else if distance < 28 * 28 {
+                self.hull -= 12;
             }
         }
         if self.hull < 0 {
