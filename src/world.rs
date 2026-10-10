@@ -114,6 +114,7 @@ pub(crate) const HP_BUNKER: i8 = 28;
 pub(crate) const MAX_SHOTS: usize = 12;
 pub(crate) const MAX_MINES: usize = 8;
 pub(crate) const MAX_BOOMS: usize = 6;
+pub(crate) const MAX_BURNS: usize = 6;
 pub(crate) const MAX_TRUCKS: usize = 4;
 pub(crate) const MAX_TANKS: usize = 3;
 pub(crate) const MAX_BUNKERS: usize = 3;
@@ -350,11 +351,22 @@ pub(crate) struct Cache {
     pub(crate) alive: bool,
 }
 
+/// A tree or bush the blast set alight. It stands until `life` runs out.
+#[derive(Clone, Copy)]
+pub(crate) struct Burn {
+    pub(crate) tx: i32,
+    pub(crate) ty: i32,
+    pub(crate) life: u8,
+    pub(crate) alive: bool,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Boom {
     pub(crate) x: i32,
     pub(crate) y: i32,
     pub(crate) z: i32,
+    /// Kill radius in pixels. The white disc on the ground is drawn wider.
+    pub(crate) radius: i16,
     pub(crate) frame: i16,
     pub(crate) alive: bool,
 }
@@ -502,12 +514,6 @@ pub(crate) struct World {
     pub(crate) salvo_cd: i8,
     pub(crate) mark_x: i32,
     pub(crate) mark_y: i32,
-    /// Tile the ground frame is built around. `i32::MIN` means there is no frame.
-    pub(crate) guide_cx: i32,
-    pub(crate) guide_cy: i32,
-    pub(crate) guide_frame_n: u8,
-    /// Previous tile under each cell of the ground frame, so the square can leave.
-    pub(crate) guide_frame: [(i32, i32, u8); 16],
     /// Ground wash after a blast. Counts down to the plain picture.
     pub(crate) bloom: i16,
     /// Drops, marks, and a gate that came back to the pad.
@@ -519,6 +525,7 @@ pub(crate) struct World {
     pub(crate) shots: [Shot; MAX_SHOTS],
     pub(crate) mine_list: [Mine; MAX_MINES],
     pub(crate) booms: [Boom; MAX_BOOMS],
+    pub(crate) burns: [Burn; MAX_BURNS],
     pub(crate) trucks: [Truck; MAX_TRUCKS],
     pub(crate) tanks: [Tank; MAX_TANKS],
     pub(crate) bunkers: [Bunker; MAX_BUNKERS],
@@ -799,11 +806,21 @@ pub(crate) fn mortar_spots(level: u8) -> [(i32, i32); 3] {
     }
 }
 
+pub(crate) fn dead_burn() -> Burn {
+    Burn {
+        tx: 0,
+        ty: 0,
+        life: 0,
+        alive: false,
+    }
+}
+
 pub(crate) fn dead_boom() -> Boom {
     Boom {
         x: 0,
         y: 0,
         z: 0,
+        radius: 0,
         frame: 0,
         alive: false,
     }
