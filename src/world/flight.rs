@@ -72,6 +72,7 @@ impl super::World {
                 self.bombs -= 1;
                 self.spent = self.spent.saturating_add(1);
                 self.fire_cd = 16;
+                self.note_drill_drop();
             } else if arm == ARM_HE && once && self.he > 0 && self.try_shot(KIND_HE) {
                 self.he -= 1;
                 self.spent = self.spent.saturating_add(1);
@@ -100,7 +101,29 @@ impl super::World {
         self.enemy_fire();
         self.aa_tick();
         self.update_booms();
+        self.advance_drill();
         self.wear();
+    }
+
+    /// Hovering over the practice mark is the first step. The drop is the second.
+    fn advance_drill(&mut self) {
+        if !matches!(task_of(self.level), Task::Gate) || self.lesson != 0 || !self.hover {
+            return;
+        }
+        let (mx, my) = self.drill_mark();
+        if dist2_px(self.x, self.y, mx, my) <= 24 * 24 {
+            self.lesson = 1;
+        }
+    }
+
+    fn note_drill_drop(&mut self) {
+        if !matches!(task_of(self.level), Task::Gate) || self.lesson >= 2 || !self.hover {
+            return;
+        }
+        let (mx, my) = self.drill_mark();
+        if dist2_px(self.x, self.y, mx, my) <= 24 * 24 {
+            self.lesson = 2;
+        }
     }
 
     /// B under the crosshair calls the salvo. The count runs, then the rounds land.

@@ -253,16 +253,15 @@ pub(crate) fn sensor_of(level: u8) -> Sensor {
 pub(crate) fn task_of(level: u8) -> Task {
     // One campaign, in order. The cards are not a menu.
     match level % LEVEL_COUNT {
-        // One new idea at a time: a single man, then a line, a building, a
-        // moving truck, two glasses, a height gate, the mark, then tanks,
-        // bunkers, and only then the kamikaze.
-        0 => Task::Officer,
-        1 => Task::Trench,
-        2 => Task::Hq,
-        3 => Task::Convoy,
-        4 => Task::Night,
-        5 => Task::Heat,
-        6 => Task::Gate,
+        // The lesson is first. Everything that used to sit ahead of it
+        // moves up one card. The rest of the list stays put.
+        0 => Task::Gate,
+        1 => Task::Officer,
+        2 => Task::Trench,
+        3 => Task::Hq,
+        4 => Task::Convoy,
+        5 => Task::Night,
+        6 => Task::Heat,
         7 => Task::Guide,
         8 => Task::Column,
         9 => Task::Armor,
@@ -333,8 +332,10 @@ pub(crate) fn rack(task: Task) -> (i32, i32, i32, i32) {
         Task::Drift => (4, 0, 0, 6),
         Task::Thaw => (6, 0, 4, 6),
         Task::Hearth => (2, 0, 0, 6),
-        Task::Gate | Task::Fpv | Task::Guide | Task::Column | Task::Rush | Task::Push
-        | Task::Nest | Task::Dart | Task::Bend | Task::Fetch | Task::Swarm => (0, 0, 0, 0),
+        // Two bombs: the lesson, and one miss that still clears.
+        Task::Gate => (2, 0, 0, 0),
+        Task::Fpv | Task::Guide | Task::Column | Task::Rush | Task::Push | Task::Nest
+        | Task::Dart | Task::Bend | Task::Fetch | Task::Swarm => (0, 0, 0, 0),
     }
 }
 
@@ -365,7 +366,8 @@ pub(crate) fn earned_marks(world: &World) -> u8 {
 
 fn spare_clear(world: &World) -> bool {
     let limit = match task_of(world.level) {
-        Task::Gate => return world.spent == 0,
+        // The lesson spends the one bomb it asks for.
+        Task::Gate => return world.spent <= 1,
         Task::Fpv => return world.drones >= 3,
         Task::Nest | Task::Dart => return world.drones >= 2,
         Task::Swarm => return world.hull >= 50,
@@ -596,6 +598,8 @@ pub(crate) struct World {
     pub(crate) guide: i16,
     pub(crate) salvo: i8,
     pub(crate) salvo_cd: i8,
+    /// First card only. 0 hover over the mark, 1 drop, 2 fly the gap.
+    pub(crate) lesson: u8,
     pub(crate) mark_x: i32,
     pub(crate) mark_y: i32,
     /// Ground wash after a blast. Counts down to the plain picture.
@@ -667,7 +671,9 @@ pub(crate) fn start_tile(level: u8) -> (i32, i32) {
         Task::Night => (24, 52),
         Task::Heat => (24, 26),
         Task::Convoy => (8, 48),
-        Task::Gate | Task::Fpv => (24, 92),
+        // Off the posts and short of them, so the first card has to turn.
+        Task::Gate => (14, 84),
+        Task::Fpv => (24, 92),
         Task::Guide => (24, 44),
         Task::Column | Task::Armor | Task::Fetch | Task::Swarm => (24, 90),
         Task::Rush => (24, 68),
@@ -1027,7 +1033,8 @@ pub(crate) fn cache_spots(level: u8) -> [(i32, i32); 6] {
     if haul_card(level) {
         [(14, 78), (34, 76), (24, 70), (6, 96), (42, 96), (24, 112)]
     } else {
-        [(18, 82), (30, 82), (24, 76), (8, 96), (40, 96), (24, 108)]
+        // One belt just south of the pad. Three trips, and one miss, fit the clock.
+        [(20, 96), (24, 96), (28, 96), (20, 100), (24, 100), (28, 100)]
     }
 }
 

@@ -51,11 +51,13 @@ struct Report {
     spent: i16,
 }
 
-pub(crate) fn survey(floor: &mut AffineBackground) -> u32 {
+pub(crate) fn survey(floor: &mut AffineBackground) -> (u32, u32) {
     let mut cleared = 0u32;
+    let mut starred = 0u32;
     for level in 0..LEVEL_COUNT {
         let styles = styles_for(level);
         let mut any = false;
+        let mut full = false;
         for style in styles {
             let report = play(floor, level, *style);
             agb::println!(
@@ -72,13 +74,18 @@ pub(crate) fn survey(floor: &mut AffineBackground) -> u32 {
                 report.age
             );
             any |= report.clear;
+            full |= report.stars == 3;
         }
         if any {
             cleared |= 1 << level;
         }
+        if full {
+            starred |= 1 << level;
+        }
     }
     agb::println!("cleared {}/{}", cleared.count_ones(), LEVEL_COUNT);
-    cleared
+    agb::println!("starred {}/{}", starred.count_ones(), LEVEL_COUNT);
+    (cleared, starred)
 }
 
 fn styles_for(level: u8) -> &'static [Style] {
@@ -170,7 +177,7 @@ fn stick(world: &World, style: Style, still: &mut i16) -> ButtonState {
     let mut press = ButtonState::empty();
     let aim = nearest(world);
     match style {
-        Style::Gap => {}
+        Style::Gap => gap(world, &mut press),
         Style::Haul => haul(world, &mut press),
         Style::Ram => {
             if let Some(aim) = aim.as_ref() {
@@ -247,10 +254,14 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     // The mud men are two drops beside the truck. Anywhere else, infantry
     // shoots back under twenty.
     let low_men = aim.kind == MAN && matches!(task_of(world.level), Task::Drift);
+    let post = matches!(task_of(world.level), Task::Hearth) && aim.kind == MAN;
     let safe = if lane || (watched && !hatch) || (hatch && in_guns) {
         22
     } else if hatch && body > 200 * 200 && (guns.is_empty() == false || matches!(task_of(world.level), Task::Thaw)) {
         // High over the lane, and over the mud. The dive starts close to the tank.
+        22
+    } else if post {
+        // The watch fires under 20. The pass stays above it.
         22
     } else if hatch {
         9
@@ -261,7 +272,13 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     } else {
         10
     };
-    let band = if safe >= 20 { 18..=24 } else { 8..=13 };
+    let band = if post {
+        21..=24
+    } else if safe >= 20 {
+        18..=24
+    } else {
+        8..=13
+    };
     let slop = drop_slop(aim.kind, alt);
     let reach = if low_men {
         36
@@ -272,10 +289,11 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     };
     let (enter, stay) = (reach, reach + 24);
     let here = if driving || hatch { body } else { dist };
+    let hatch_window = (8..=12).contains(&alt);
     let close = if chasing {
         dist <= slop * slop
     } else if hatch {
-        (8..=12).contains(&alt) && body <= if world.hover { 80 * 80 } else { 48 * 48 }
+        hatch_window && body <= if world.hover { 80 * 80 } else { 48 * 48 }
     } else if world.hover {
         here <= stay * stay
     } else {
@@ -286,13 +304,13 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
         tap(press, Button::Select);
     }
     let on_top = if hatch {
-        world.hover && alt <= 12 && body <= HATCH * HATCH
+        world.hover && hatch_window && body <= HATCH * HATCH
     } else {
         world.hover && dist <= slop * slop
     };
     let (sx, sy) = if hatch { (aim.x, aim.y) } else { (lx, ly) };
     if world.hover && !on_top {
-        slide(world, sx, sy, hatch, press);
+        slide(world, sx, sy, hatch || aim.kind == MAN, press);
     } else if !world.hover {
         // A goal truck dead ahead is caught on its lead. Aiming past that
         // point flies over it and the turn never comes back inside the blast.
@@ -328,12 +346,20 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     // A mine or a grenade only counts the first frame of a held button.
     if on_top {
         *still = still.saturating_add(1);
-        let snap = matches!(task_of(world.level), Task::Cover | Task::Drift);
+        let snap = matches!(task_of(world.level), Task::Cover);
         let charge = world.arm == ARM_MINE;
+        let thaw = matches!(task_of(world.level), Task::Thaw);
+        // Two hull mines finish a tank. A later pulse on the mud leaves
+        // while those two are still falling. The other armour cards need
+        // that later pulse: the first two do not always land.
         let due = if charge {
-            *still == 3 || (*still > 3 && *still % 40 == 0)
+            if thaw {
+                *still == 3 || *still == 40
+            } else {
+                *still == 3 || (*still > 3 && *still % 80 == 0)
+            }
         } else {
-            *still > 2
+            *still == 3
         };
         if (snap || due) && !will_turn(world, aim, n) {
             tap(press, Button::B);
@@ -432,6 +458,30 @@ fn pursuit(world: &World, aim: Option<&Aim>, want_alt: i32, press: &mut ButtonSt
     }
 }
 
+fn gap(world: &World, press: &mut ButtonState) {
+    if world.lesson < 2 {
+        let (mx, my) = world.drill_mark();
+        let alt = world.alt >> 8;
+        let dist = dist2_px(world.x, world.y, mx, my);
+        if dist > 16 * 16 || !(10..=16).contains(&alt) {
+            want_hover(world, false, press);
+            face(world, mx, my, press);
+            pitch_toward(world, 12, press);
+        } else if !world.hover {
+            want_hover(world, true, press);
+        } else {
+            tap(press, Button::B);
+        }
+        return;
+    }
+    if world.hover {
+        want_hover(world, false, press);
+        return;
+    }
+    face(world, world.gate_x(), world.gate_y(), press);
+    pitch_toward(world, 12, press);
+}
+
 fn haul(world: &World, press: &mut ButtonState) {
     let alt = world.alt >> 8;
     if !world.cargo {
@@ -464,15 +514,14 @@ fn haul(world: &World, press: &mut ButtonState) {
         return;
     };
     let dist = dist2_px(world.x, world.y, aim.x, aim.y);
-    if dist > 6 * 6 {
+    if dist > 4 * 4 {
         transit(world, alt, aim.x, aim.y, 22, press);
-    } else if !(9..=11).contains(&alt) {
+    } else if alt > 9 {
         want_hover(world, false, press);
-        if alt < 9 {
-            tap(press, Button::Up);
-        } else {
-            tap(press, Button::Down);
-        }
+        tap(press, Button::Down);
+    } else if alt < 8 {
+        want_hover(world, false, press);
+        tap(press, Button::Up);
     } else {
         want_hover(world, true, press);
         if world.hover && world.age % 2 == 0 {
@@ -678,7 +727,14 @@ fn nearest(world: &World) -> Option<Aim> {
     for soldier in &world.soldiers {
         if soldier.alive && man_counts(task, soldier) {
             let (vx, vy) = man_vel(world, soldier);
-            keep(&mut best, world, soldier.x, soldier.y, vx, vy, MAN);
+            // A pair shares a tile. Aiming at one of them flips every frame
+            // and the grenade never leaves.
+            let (x, y) = if matches!(task, Task::Pits) {
+                ((soldier.home_tx * 8 + 4) << 8, (soldier.home_ty * 8 + 4) << 8)
+            } else {
+                (soldier.x, soldier.y)
+            };
+            keep(&mut best, world, x, y, vx, vy, MAN);
         }
     }
     for truck in &world.trucks {
@@ -826,7 +882,10 @@ fn armor_counts(task: Task) -> bool {
 fn man_vel(world: &World, soldier: &Soldier) -> (i32, i32) {
     if soldier.objective && matches!(task_of(world.level), Task::Rush | Task::Push) {
         (0, -rush_step(world.level))
-    } else if matches!(task_of(world.level), Task::Fpv | Task::Nest) {
+    } else if matches!(
+        task_of(world.level),
+        Task::Fpv | Task::Nest | Task::Grove | Task::Thaw | Task::Hearth | Task::Pits
+    ) {
         (0, 0)
     } else {
         (ground_step(soldier.dir), 0)
@@ -979,13 +1038,13 @@ fn style_name(style: Style) -> &'static str {
 
 fn card_name(level: u8) -> &'static str {
     match level {
-        0 => "OFFICER",
-        1 => "TRENCH",
-        2 => "HOUSE",
-        3 => "TRUCK",
-        4 => "NIGHT",
-        5 => "HEAT",
-        6 => "GATE",
+        0 => "GATE",
+        1 => "OFFICER",
+        2 => "TRENCH",
+        3 => "HOUSE",
+        4 => "TRUCK",
+        5 => "NIGHT",
+        6 => "HEAT",
         7 => "MARK",
         8 => "COLUMN",
         9 => "ARMOR",
@@ -1020,7 +1079,7 @@ fn campaign_sorties(_gba: &mut agb::Gba) {
         agb::display::tiled::AffineBackgroundSize::Background64x64,
         agb::display::tiled::AffineBackgroundWrapBehaviour::Wrap,
     );
-    let cleared = survey(&mut floor);
+    let (cleared, starred) = survey(&mut floor);
     // Cards a stick pilot has already cleared. A miss here is a regression.
     // The other lines in the log are the sorts the pilot does not finish.
     let proved = (1 << 0)
@@ -1055,4 +1114,6 @@ fn campaign_sorties(_gba: &mut agb::Gba) {
         | (1 << 29);
     let missed = proved & !cleared;
     assert!(missed == 0, "regressed cards {missed:#x}");
+    let short = proved & !starred;
+    assert!(short == 0, "short of 3 stars {short:#x}");
 }
