@@ -146,12 +146,16 @@ include_aseprite!(
     "gfx/pause_resume_on.png",
     "gfx/pause_exit.png",
     "gfx/pause_exit_on.png",
+    64x64 "gfx/title.png",
+    64x64 "gfx/stills.png",
     64x64 "gfx/noise.png",
+    32x8 "gfx/lip.png",
     64x64 "gfx/flash.png",
     32x32 "gfx/sun.png",
     32x32 "gfx/moon.png",
     8x8 "gfx/star.png",
     16x16 "gfx/font.png",
+    16x16 "gfx/card.png",
     16x16 "gfx/medal.png",
     16x16 "gfx/arrow.png",
 );
@@ -159,6 +163,10 @@ include_aseprite!(
 mod audio;
 mod draw;
 mod save;
+#[cfg(test)]
+mod pilot;
+#[cfg(test)]
+mod tests;
 mod world;
 
 use audio::*;
@@ -205,7 +213,7 @@ fn main(mut gba: agb::Gba) -> ! {
         if phase == Phase::Splash {
             let skip = input.is_just_pressed(Button::Start) || input.is_just_pressed(Button::A);
             splash_age += 1;
-            if skip || splash_age > 240 {
+            if skip {
                 phase = Phase::Title;
                 splash_age = 0;
             }
@@ -390,7 +398,7 @@ fn main(mut gba: agb::Gba) -> ! {
         mixer.frame();
 
         if phase == Phase::Splash {
-            gfx.set_background_palette_colour_256(0, Rgb::new(0, 0, 0).to_rgb15());
+            gfx.set_background_palette_colour_256(0, Rgb::new(120, 152, 168).to_rgb15());
             let mut frame = gfx.frame();
             draw_studio(&mut frame, splash_age);
             mixer.frame();
@@ -409,17 +417,7 @@ fn main(mut gba: agb::Gba) -> ! {
             hide_ground();
             card_age += 1;
             let sensor = glass_of(&progress, progress.level);
-            gfx.set_background_palette_colour_256(
-                0,
-                match sensor {
-                    Sensor::Night => Rgb::new(1, 8, 2),
-                    Sensor::Heat => Rgb::new(2, 1, 4),
-                    Sensor::Ir => Rgb::new(5, 5, 5),
-                    Sensor::Day => Rgb::new(120, 152, 168),
-                    Sensor::Winter => Rgb::new(168, 184, 196),
-                }
-                .to_rgb15(),
-            );
+            gfx.set_background_palette_colour_256(0, Rgb::new(24, 64, 128).to_rgb15());
             let picked = progress.level;
             let mut frame = gfx.frame();
             draw_select(
@@ -485,6 +483,9 @@ fn main(mut gba: agb::Gba) -> ! {
             },
         );
         let playing = matches!(phase, Phase::Fly | Phase::Pause);
+        let airframe_dead = phase == Phase::Crash && matches!(world.why, Why::Hull | Why::Cell);
+        let sealed = airframe_dead || (playing && world.signal_loss() >= 16);
+        let cockpit = playing || airframe_dead;
         let blown = playing && world.recover > 0;
         queue_look(
             sensor,
@@ -496,7 +497,7 @@ fn main(mut gba: agb::Gba) -> ! {
                     Sensor::Heat => Rgb::new(2, 1, 4),
                     Sensor::Ir => Rgb::new(5, 5, 5),
                     Sensor::Day => Rgb::new(120, 152, 168),
-                    Sensor::Winter => Rgb::new(168, 184, 196),
+                    Sensor::Winter => Rgb::new(184, 176, 144),
                 }
             }
             .to_rgb15(),
@@ -504,7 +505,6 @@ fn main(mut gba: agb::Gba) -> ! {
 
         let mut frame = gfx.frame();
         let ground_id = ground.show(&mut frame);
-        let cockpit = playing;
         mask_view(&mut frame, ground_id, sky_h, cockpit, false, world.bloom > 0);
 
         // First object submitted is the front-most. Instruments go in before
@@ -513,9 +513,9 @@ fn main(mut gba: agb::Gba) -> ! {
             if phase == Phase::Pause {
                 draw_pause(&mut frame, menu);
             }
-            draw_hud(&mut frame, &world);
-            draw_cockpit(&mut frame, &world, sin_r, cos_r);
-            draw_noise(&mut frame, world.age);
+            draw_hud(&mut frame, &world, true);
+            draw_cockpit(&mut frame, &world, sin_r, cos_r, true);
+            draw_noise(&mut frame, world.age, true);
             mixer.frame();
             frame.commit();
             arm_ground();
@@ -541,6 +541,11 @@ fn main(mut gba: agb::Gba) -> ! {
                 if let Some(card) = card {
                     show(&mut frame, card, 88, 84);
                 }
+                if matches!(world.why, Why::Hull | Why::Cell) {
+                    world.age = world.age.wrapping_add(1);
+                    draw_hud(&mut frame, &world, true);
+                    draw_cockpit(&mut frame, &world, sin_r, cos_r, true);
+                }
             }
             Phase::Win => {
                 show(&mut frame, sprites::WIN.sprite(0), 88, 56);
@@ -551,26 +556,33 @@ fn main(mut gba: agb::Gba) -> ! {
                 if phase == Phase::Pause {
                     draw_pause(&mut frame, menu);
                 }
-                draw_hud(&mut frame, &world);
-                draw_cockpit(&mut frame, &world, sin_r, cos_r);
+                draw_hud(&mut frame, &world, world.signal_loss() >= 8);
+                draw_cockpit(&mut frame, &world, sin_r, cos_r, world.signal_loss() >= 8);
                 draw_hurt(&mut frame, &world);
             }
             Phase::Splash => {}
         }
-        if playing && horizon > 12 {
+        if playing && horizon > 12 && !sealed {
             draw_glass_glare(&mut frame, &world, horizon, sensor);
         }
-        set_detail(playing);
-        draw_world(
-            &mut frame,
-            &world,
-            sin_r,
-            cos_r,
-            horizon,
-            cockpit,
-            sensor,
-        );
-        draw_horizon(&mut frame, &world, horizon, sky_h, cockpit, sensor);
+        if sealed {
+            draw_noise(&mut frame, world.age, true);
+        } else {
+            // The crowns and the raid sit in this call. Fill first, so that
+            // work does not run on for two frames without a new music slice.
+            mixer.frame();
+            set_detail(playing);
+            draw_world(
+                &mut frame,
+                &world,
+                sin_r,
+                cos_r,
+                horizon,
+                cockpit,
+                sensor,
+            );
+            draw_horizon(&mut frame, &world, horizon, sky_h, cockpit, sensor);
+        }
 
         mixer.frame();
         frame.commit();

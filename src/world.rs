@@ -56,6 +56,8 @@ pub(crate) const T_DIRT: u8 = 3;
 pub(crate) const T_ROAD: u8 = 4;
 pub(crate) const T_WATER: u8 = 5;
 pub(crate) const T_TREE: u8 = 6;
+/// A pine is solid only on a low pass. Cruise and every mission start sit above it.
+pub(crate) const TREE_TOP: i32 = 6;
 pub(crate) const T_CRATER: u8 = 7;
 /// Parked with the sheet. The mortar round is a sprite and bursts when it lands.
 pub(crate) const T_MINE: u8 = 8;
@@ -71,7 +73,7 @@ pub(crate) const T_PATCH: u8 = 16;
 /// A trunk left after a fire. The tile is scorched mud, the sprite is the stick.
 pub(crate) const T_STUMP: u8 = 17;
 
-pub(crate) const LEVEL_COUNT: u8 = 25;
+pub(crate) const LEVEL_COUNT: u8 = 30;
 /// A battery sees the drone only inside its circle, and only under this height.
 /// At this height the airframe leaves every gun's sight.
 pub(crate) const AA_HIDE: i32 = 20;
@@ -166,6 +168,7 @@ pub(crate) enum Why {
 }
 
 /// What ends the sortie. Each card is a different task and a different way to fly.
+#[derive(Clone, Copy)]
 pub(crate) enum Task {
     /// Bomb a marked stretch of trench.
     Trench,
@@ -213,6 +216,16 @@ pub(crate) enum Task {
     Swarm,
     /// One truck for the posts, two quads riding above it. The bullet takes the quads, a bomb the truck.
     Cover,
+    /// Daylight over snow, mud, and sulfur. The trees are already burned. Men still hold the trenches.
+    Pits,
+    /// Green pines in clean snow. The men stand on one mud island.
+    Grove,
+    /// One truck on the snow road. Stop it before the north mark.
+    Drift,
+    /// Three tanks, each parked on its own mud island.
+    Thaw,
+    /// One officer in the pines.
+    Hearth,
 }
 
 /// What the glass shows. The side instruments stay in their own colours.
@@ -223,7 +236,7 @@ pub(crate) enum Sensor {
     Heat,
     /// Active infrared illuminator: grey-green, with blooms on a blast.
     Ir,
-    /// Snow on the ground. Painted and matched, for a later card. No sortie wears it yet.
+    /// Daylight on snow. The ash pits burn the trees. The later cards keep the pines green.
     Winter,
 }
 
@@ -232,11 +245,8 @@ pub(crate) fn sensor_of(level: u8) -> Sensor {
         Task::Night | Task::Armor | Task::Flare => Sensor::Night,
         Task::Heat | Task::Pill | Task::Dart | Task::Skirt => Sensor::Heat,
         Task::Guide | Task::Column | Task::Rush | Task::Push | Task::Bend => Sensor::Ir,
-        _ => {
-            // Keeps the winter glass constructed until a later card returns it.
-            let _ = Sensor::Winter;
-            Sensor::Day
-        }
+        Task::Pits | Task::Grove | Task::Drift | Task::Thaw | Task::Hearth => Sensor::Winter,
+        _ => Sensor::Day,
     }
 }
 
@@ -269,6 +279,11 @@ pub(crate) fn task_of(level: u8) -> Task {
         20 | 21 => Task::Fetch,
         22 | 23 => Task::Swarm,
         24 => Task::Cover,
+        25 => Task::Pits,
+        26 => Task::Grove,
+        27 => Task::Drift,
+        28 => Task::Thaw,
+        29 => Task::Hearth,
         _ => Task::Guide,
     }
 }
@@ -292,7 +307,9 @@ pub(crate) fn time_budget(level: u8) -> i32 {
         | Task::Bend | Task::Column | Task::Armor | Task::Pill | Task::Rush | Task::Skirt => 3600,
         Task::Push | Task::Swarm => 4200,
         Task::Fetch => 4800,
-        Task::Cover => 4500,
+        Task::Cover | Task::Pits | Task::Drift => 4500,
+        Task::Grove | Task::Thaw => 3600,
+        Task::Hearth => 2700,
     };
     if haul_card(level) || defend_card(level) {
         frames + 1200
@@ -301,7 +318,37 @@ pub(crate) fn time_budget(level: u8) -> i32 {
     }
 }
 
-/// Bit 0 is time, bit 1 is battery still at 30, bit 2 is a spare load.
+/// Bombs, shells, mines, grenades. A bare card carries nothing.
+pub(crate) fn rack(task: Task) -> (i32, i32, i32, i32) {
+    match task {
+        Task::Officer => (0, 0, 0, 4),
+        Task::Trench => (4, 1, 0, 8),
+        Task::Hq => (4, 4, 0, 0),
+        Task::Convoy | Task::Cover => (3, 0, 0, 0),
+        Task::Night | Task::Heat | Task::Lane => (6, 0, 0, 0),
+        Task::Armor | Task::Flare => (6, 0, 4, 0),
+        Task::Pill | Task::Skirt => (0, 6, 0, 0),
+        Task::Pits => (4, 2, 0, 8),
+        Task::Grove => (2, 1, 0, 6),
+        Task::Drift => (4, 0, 0, 6),
+        Task::Thaw => (6, 0, 4, 6),
+        Task::Hearth => (2, 0, 0, 6),
+        Task::Gate | Task::Fpv | Task::Guide | Task::Column | Task::Rush | Task::Push
+        | Task::Nest | Task::Dart | Task::Bend | Task::Fetch | Task::Swarm => (0, 0, 0, 0),
+    }
+}
+
+/// The round in hand when the card starts.
+pub(crate) fn opening_arm(task: Task) -> u8 {
+    match task {
+        Task::Fpv | Task::Nest | Task::Dart | Task::Swarm | Task::Cover | Task::Grove
+        | Task::Hearth => ARM_GUN,
+        Task::Fetch | Task::Armor | Task::Flare | Task::Thaw => ARM_MINE,
+        Task::Pill | Task::Skirt | Task::Hq => ARM_HE,
+        Task::Pits | Task::Trench | Task::Officer | Task::Drift => ARM_VOG,
+        _ => ARM_BOMB,
+    }
+}
 pub(crate) fn earned_marks(world: &World) -> u8 {
     let mut bits = 0u8;
     if world.age <= time_budget(world.level) {
@@ -323,10 +370,12 @@ fn spare_clear(world: &World) -> bool {
         Task::Nest | Task::Dart => return world.drones >= 2,
         Task::Swarm => return world.hull >= 50,
         Task::Officer | Task::Convoy | Task::Cover => 2,
+        Task::Hearth => 4,
         Task::Guide | Task::Column | Task::Rush | Task::Bend | Task::Fetch | Task::Night
-        | Task::Heat | Task::Lane | Task::Push => 3,
-        Task::Trench | Task::Pill | Task::Skirt | Task::Armor | Task::Flare => 6,
-        Task::Hq => 8,
+        | Task::Heat | Task::Lane | Task::Push => 4,
+        Task::Drift | Task::Trench | Task::Pill | Task::Skirt | Task::Armor | Task::Flare
+        | Task::Grove => 6,
+        Task::Thaw | Task::Pits | Task::Hq => 8,
     };
     world.spent <= limit
 }
@@ -613,20 +662,33 @@ pub(crate) fn hash(x: i32, y: i32) -> u32 {
 
 pub(crate) fn start_tile(level: u8) -> (i32, i32) {
     match task_of(level) {
-        // South of the marks: a stretch of open ground, still inside the radio.
-        Task::Trench | Task::Officer | Task::Hq => (24, 90),
-        Task::Night | Task::Heat => (24, 78),
-        Task::Convoy => (8, 70),
+        // A short run north to the mark. Not on top of it, and not a haul.
+        Task::Trench | Task::Officer | Task::Hq | Task::Pill => (24, 46),
+        Task::Night => (24, 52),
+        Task::Heat => (24, 26),
+        Task::Convoy => (8, 48),
         Task::Gate | Task::Fpv => (24, 92),
-        Task::Guide | Task::Column | Task::Armor => (24, 90),
-        Task::Rush | Task::Push => (24, 64),
+        Task::Guide => (24, 44),
+        Task::Column | Task::Armor | Task::Fetch | Task::Swarm => (24, 90),
+        Task::Rush => (24, 68),
+        Task::Push => (24, 80),
+        // South of the first guns, so the lane itself is the flight.
         Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => (22, 88),
-        Task::Pill => (24, 86),
-        Task::Fetch => (24, 90),
-        Task::Swarm => (24, 90),
-        // South of the truck, facing the posts.
-        Task::Cover => (24, 78),
+        Task::Cover => (24, 64),
+        Task::Pits => (24, 54),
+        Task::Grove => (24, 62),
+        Task::Drift => (14, 62),
+        Task::Thaw => (24, 68),
+        Task::Hearth => (24, 58),
     }
+}
+
+/// The snow cards after the ash pits. Pines stay green.
+pub(crate) fn winter_card(level: u8) -> bool {
+    matches!(
+        task_of(level),
+        Task::Grove | Task::Drift | Task::Thaw | Task::Hearth
+    )
 }
 
 pub(crate) struct AaGun {
@@ -634,6 +696,13 @@ pub(crate) struct AaGun {
     pub(crate) ty: i32,
     pub(crate) radius: i32,
 }
+
+/// The pine post. The pad sits just outside. Climb before the circle, or the watch wakes.
+pub(crate) const HEARTH_WATCH: [AaGun; 1] = [AaGun {
+    tx: 24,
+    ty: 30,
+    radius: 112,
+}];
 
 /// Three gates. The open side shifts right, then back left.
 pub(crate) const LANE_GUNS: [AaGun; 6] = [
@@ -650,6 +719,7 @@ pub(crate) fn aa_guns(task: Task) -> &'static [AaGun] {
         Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => {
             &LANE_GUNS
         }
+        Task::Hearth => &HEARTH_WATCH,
         _ => &[],
     }
 }
@@ -681,8 +751,144 @@ pub(crate) fn lane_world(cam_x: i32, cam_y: i32, sin_r: i32, cos_r: i32, rx: i32
 
 /// One battlefield everywhere. Roads tie the districts together. Trenches
 /// and a few copses sit in the grass. Water is a pond, not a scatter of puddles.
-/// The skyline is not this map.
+/// The skyline is not this map. The ash pits dress that field after it is chosen.
 pub(crate) fn terrain(level: u8, tx: i32, ty: i32) -> u8 {
+    let tile = field_tile(level, tx, ty);
+    if matches!(task_of(level), Task::Pits) {
+        return pits_tile(level, tx, ty, tile);
+    }
+    if winter_card(level) {
+        return winter_tile(level, tx, ty, tile);
+    }
+    tile
+}
+
+/// Snow broken by mud, sulfur crust, burned trunks, and extra trench lines.
+fn pits_tile(level: u8, tx: i32, ty: i32, tile: u8) -> u8 {
+    let (pad_x, pad_y) = start_tile(level);
+    if (tx - pad_x).abs() <= 3 && (ty - pad_y).abs() <= 3 {
+        return tile;
+    }
+    let lx = tx.rem_euclid(REGION);
+    let ly = ty.rem_euclid(REGION);
+    let gap = lx % 14 == 7;
+    if !gap && lx > 2 && matches!(ly, 14 | 28 | 44) {
+        return T_LIP;
+    }
+    if !gap && lx > 2 && matches!(ly, 15 | 29 | 45) {
+        return T_TRENCH;
+    }
+    // Past the trenches the field is winter: white snow, a few burned trunks.
+    if tx < 6 || tx > 44 || ty < 12 || ty > 40 {
+        return snow_field(tx, ty, tile);
+    }
+    match tile {
+        T_TREE | T_BUSH => T_STUMP,
+        T_FLOOR | T_FLOOR2 | T_GRASS_L | T_GRASS_D | T_TUFT | T_FOG | T_PATCH => {
+            // Another copse of burned trunks, standing together.
+            let wx = tx.div_euclid(3);
+            let wy = ty.div_euclid(3);
+            if hash(wx, wy.wrapping_add(53)) % 3 == 0 {
+                return T_STUMP;
+            }
+            // A patch of clean snow. The glass turns this pale tile white.
+            let sx = tx.div_euclid(4);
+            let sy = ty.div_euclid(4);
+            if hash(sx, sy.wrapping_add(29)) % 3 == 0 {
+                return T_SKY;
+            }
+            let n = hash(tx, ty.wrapping_add(91));
+            if n % 8 == 0 {
+                T_DIRT
+            } else if n % 13 == 0 {
+                T_CRATER
+            } else {
+                tile
+            }
+        }
+        _ => tile,
+    }
+}
+
+/// Clean snow, green pines, and a few mud islands. The ash pits do not use this.
+fn winter_tile(level: u8, tx: i32, ty: i32, tile: u8) -> u8 {
+    let (pad_x, pad_y) = start_tile(level);
+    if (tx - pad_x).abs() <= 3 && (ty - pad_y).abs() <= 3 {
+        return tile;
+    }
+    if tile == T_ROAD {
+        return T_ROAD;
+    }
+    if mud_here(level, tx, ty) {
+        return T_DIRT;
+    }
+    if burned_ring(level, tx, ty) {
+        return T_STUMP;
+    }
+    if tile == T_TREE || tile == T_BUSH {
+        return tile;
+    }
+    let wx = tx.div_euclid(3);
+    let wy = ty.div_euclid(3);
+    if hash(wx, wy.wrapping_add(71)) % 4 == 0 {
+        return T_TREE;
+    }
+    if hash(tx, ty.wrapping_add(19)) % 6 == 0 && !matches!(tile, T_TRENCH | T_LIP | T_WATER) {
+        return tile;
+    }
+    T_SKY
+}
+
+/// Centres and radii of the brown islands on a snow card.
+fn mud_islands(level: u8) -> &'static [(i32, i32, i32)] {
+    match task_of(level) {
+        Task::Grove => &[(22, 32, 6), (40, 28, 3)],
+        Task::Drift => &[(12, 34, 4), (22, 20, 3)],
+        Task::Thaw => &[(12, 42, 4), (28, 36, 4), (40, 44, 4), (24, 110, 4)],
+        Task::Hearth => &[(24, 30, 3), (10, 36, 4), (38, 24, 3)],
+        _ => &[],
+    }
+}
+
+fn mud_here(level: u8, tx: i32, ty: i32) -> bool {
+    mud_islands(level).iter().any(|&(cx, cy, r)| {
+        let dx = tx - cx;
+        let dy = ty - cy;
+        dx * dx + dy * dy <= r * r
+    })
+}
+
+/// Scorched trunks around the snow-wood fight. Farther out the pines stay green.
+fn burned_ring(level: u8, tx: i32, ty: i32) -> bool {
+    if !matches!(task_of(level), Task::Grove) {
+        return false;
+    }
+    let dx = tx - 22;
+    let dy = ty - 32;
+    let dist = dx * dx + dy * dy;
+    (49..=225).contains(&dist) && hash(tx, ty.wrapping_add(4)) % 4 != 0
+}
+
+/// White snow outside the fight, with burned trunks still standing in it.
+fn snow_field(tx: i32, ty: i32, tile: u8) -> u8 {
+    match tile {
+        T_ROAD | T_WATER => tile,
+        T_TREE | T_BUSH => T_STUMP,
+        _ => {
+            let wx = tx.div_euclid(3);
+            let wy = ty.div_euclid(3);
+            if hash(wx, wy.wrapping_add(53)) % 4 == 0 {
+                T_STUMP
+            } else if hash(tx, ty.wrapping_add(11)) % 14 == 0 {
+                T_DIRT
+            } else {
+                T_SKY
+            }
+        }
+    }
+}
+
+fn field_tile(level: u8, tx: i32, ty: i32) -> u8 {
     let (pad_x, pad_y) = start_tile(level);
     if (tx - pad_x).abs() <= 3 && (ty - pad_y).abs() <= 3 {
         return T_FLOOR;
@@ -1029,12 +1235,28 @@ pub(crate) fn rush_step(level: u8) -> i32 {
     24 + heat(level)
 }
 
-/// Facing stays in `dir`. The step is a crawl so a mark cannot leave the radio.
+/// Facing stays in `dir`. Men and tanks keep this crawl.
 pub(crate) fn ground_step(dir: i32) -> i32 {
     if dir > 0 {
         18
     } else if dir < 0 {
         -18
+    } else {
+        0
+    }
+}
+
+/// Subpixels per frame for a truck that is actually driving.
+/// A bomb from the usual pass falls for about a second, and the blast is 14
+/// pixels. 72 subpixels carries the truck just past that circle, so a round
+/// aimed at where it is now lands behind it. A spotter salvo waits four
+/// seconds, so that pace stays at 22: still behind the mark, still in the glass.
+pub(crate) fn drive_step(guide: bool, dir: i32) -> i32 {
+    let pace = if guide { 22 } else { 72 };
+    if dir > 0 {
+        pace
+    } else if dir < 0 {
+        -pace
     } else {
         0
     }

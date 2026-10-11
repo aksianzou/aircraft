@@ -31,7 +31,7 @@ impl super::World {
         let start_y = (ty * 8 + 4) << 8;
         let start_alt = alt << 8;
         let fetch = matches!(task, Task::Fetch);
-        let bare = mode == Mode::Fpv || mode == Mode::Guide || fetch;
+        let (bombs, he, mines, vog) = rack(task);
         let mut world = Self {
             marks: vec![dead_mark(); MAX_MARKS],
             mark_len: 0,
@@ -59,19 +59,13 @@ impl super::World {
             yaw: num!(0),
             pitch: num!(0),
             bank: num!(0),
-            bombs: if bare { 0 } else { 40 },
-            he: if bare { 0 } else { 8 },
-            mines: if bare { 0 } else { 8 },
-            vog: if bare { 0 } else { 16 },
+            bombs,
+            he,
+            mines,
+            vog,
             stick_hold: 0,
             stick_key: 0,
-            arm: if mode == Mode::Fpv || matches!(task, Task::Swarm | Task::Cover) {
-                ARM_GUN
-            } else if fetch {
-                ARM_MINE
-            } else {
-                ARM_BOMB
-            },
+            arm: opening_arm(task),
             hull: 100,
             battery: 100,
             blackout: 0,
@@ -100,6 +94,12 @@ impl super::World {
                 }
                 // Two quads, two wings, and the truck. Each has to fall.
                 Task::Cover => 5,
+                // Eight men still in the trenches.
+                Task::Pits => 8,
+                Task::Grove => 8,
+                Task::Drift => 4,
+                Task::Thaw => 7,
+                Task::Hearth => 5,
             },
             fire_cd: 0,
             recover: 0,
@@ -178,9 +178,8 @@ impl super::World {
                 }
             }
             self.boot += 1;
-            if self.boot & 1 == 0 {
-                pump();
-            }
+            // Every row. A pair of rows was long enough to replay a slice of music.
+            pump();
         }
         if self.boot as i32 >= total {
             self.boot = -1;
@@ -279,14 +278,15 @@ impl super::World {
                 }
             }
             Task::Cover => {
-                // Northbound between the posts. The quads ride above this truck.
+                // Northbound between the posts. The quads sit ahead of it.
+                // The run to the line is long enough for the new road speed.
                 self.trucks[0] = Truck {
                     x: (24 * 8 + 4) << 8,
-                    y: (40 * 8 + 4) << 8,
+                    y: (52 * 8 + 4) << 8,
                     dir: -32,
                     vertical: true,
                     home_tx: 24,
-                    home_ty: 40,
+                    home_ty: 52,
                     goal: true,
                     objective: true,
                     hp: HP_TRUCK,
@@ -295,14 +295,15 @@ impl super::World {
                 };
             }
             Task::Convoy => {
-                // Northbound on the west road, toward the pale mark.
+                // Northbound on the west road. Far enough south that the
+                // faster truck still takes a while to reach the mark.
                 self.trucks[0] = Truck {
                     x: (0 * 8 + 4) << 8,
-                    y: (14 * 8 + 4) << 8,
+                    y: (40 * 8 + 4) << 8,
                     dir: -32,
                     vertical: true,
                     home_tx: 0,
-                    home_ty: 14,
+                    home_ty: 40,
                     goal: true,
                     objective: true,
                     hp: HP_TRUCK,
@@ -331,11 +332,13 @@ impl super::World {
                 }
             }
             Task::Armor => {
+                // Still hulls. The hatch is the hard part, and a moving
+                // six-pixel hole is not a shot you can set up.
                 for (index, tx) in [12, 28, 44].into_iter().enumerate() {
                     self.tanks[index] = Tank {
                         x: (tx * 8 + 4) << 8,
                         y: (64 * 8 + 4) << 8,
-                        dir: 80,
+                        dir: 0,
                         vertical: false,
                         home_tx: tx,
                         home_ty: 64,
@@ -452,7 +455,7 @@ impl super::World {
                     self.trucks[index] = Truck {
                         x: (tx * 8 + 4) << 8,
                         y: (ty * 8 + 4) << 8,
-                        dir: 0,
+                        dir: if index == 1 { -90 } else { 90 },
                         vertical: false,
                         home_tx: tx,
                         home_ty: ty,
@@ -465,7 +468,9 @@ impl super::World {
                 }
             }
             Task::Flare => {
-                let spots = [(14, 24), (24, 22), (32, 24)];
+                // North of the last guns, with room to descend once the lane
+                // is behind. The circles still own the flight in.
+                let spots = [(16, 10), (24, 8), (32, 10)];
                 for (index, (tx, ty)) in spots.into_iter().enumerate() {
                     self.tanks[index] = Tank {
                         x: (tx * 8 + 4) << 8,
@@ -537,6 +542,177 @@ impl super::World {
                     };
                 }
             }
+            Task::Grove => {
+                // Two sites. Each pair stands inside one grenade, so the
+                // pass stays above the rifles. A lone man was a hover in
+                // their range.
+                let men = [
+                    (20, 32),
+                    (21, 32),
+                    (24, 34),
+                    (25, 34),
+                    (19, 22),
+                    (20, 22),
+                    (23, 24),
+                    (24, 24),
+                ];
+                for (index, (tx, ty)) in men.into_iter().enumerate() {
+                    self.soldiers[index] = Soldier {
+                        x: (tx * 8 + 4) << 8,
+                        y: (ty * 8 + 4) << 8,
+                        dir: 0,
+                        step: 0,
+                        home_tx: tx,
+                        home_ty: ty,
+                        officer: false,
+                        objective: true,
+                        hp: HP_MAN,
+                        cool: 40,
+                        alive: true,
+                    };
+                }
+            }
+            Task::Drift => {
+                self.trucks[0] = Truck {
+                    x: (0 * 8 + 4) << 8,
+                    y: (46 * 8 + 4) << 8,
+                    dir: -32,
+                    vertical: true,
+                    home_tx: 0,
+                    home_ty: 46,
+                    goal: true,
+                    objective: true,
+                    hp: HP_TRUCK,
+                    cool: 20,
+                    alive: true,
+                };
+                // Beside the road the truck is on, not a second sortie.
+                // Two share a grenade. The third is the miss you can afford.
+                let men = [(6, 36), (7, 36), (10, 34)];
+                for (index, (tx, ty)) in men.into_iter().enumerate() {
+                    self.soldiers[index] = Soldier {
+                        x: (tx * 8 + 4) << 8,
+                        y: (ty * 8 + 4) << 8,
+                        dir: 80,
+                        step: 0,
+                        home_tx: tx,
+                        home_ty: ty,
+                        officer: false,
+                        objective: true,
+                        hp: HP_MAN,
+                        cool: 40,
+                        alive: true,
+                    };
+                }
+            }
+            Task::Thaw => {
+                let spots = [(12, 42), (28, 36), (40, 44)];
+                for (index, (tx, ty)) in spots.into_iter().enumerate() {
+                    self.tanks[index] = Tank {
+                        x: (tx * 8 + 4) << 8,
+                        y: (ty * 8 + 4) << 8,
+                        dir: 0,
+                        vertical: false,
+                        home_tx: tx,
+                        home_ty: ty,
+                        objective: true,
+                        hp: HP_TANK,
+                        cool: 30,
+                        alive: true,
+                    };
+                }
+                // Well south of the pad, inside one grenade. The tanks stay on the islands north.
+                let men = [(2, 2), (6, 2), (2, 6), (6, 6)];
+                for (index, (ox, oy)) in men.into_iter().enumerate() {
+                    self.soldiers[index] = Soldier {
+                        x: (24 * 8 + ox) << 8,
+                        y: (110 * 8 + oy) << 8,
+                        dir: 80,
+                        step: 0,
+                        home_tx: 24,
+                        home_ty: 110,
+                        officer: false,
+                        objective: true,
+                        hp: HP_MAN,
+                        cool: 40,
+                        alive: true,
+                    };
+                }
+            }
+            Task::Hearth => {
+                self.soldiers[0] = Soldier {
+                    x: (24 * 8 + 4) << 8,
+                    y: (30 * 8 + 4) << 8,
+                    dir: 80,
+                    step: 0,
+                    home_tx: 24,
+                    home_ty: 30,
+                    officer: true,
+                    objective: true,
+                    hp: HP_OFFICER,
+                    cool: 40,
+                    alive: true,
+                };
+                // One circle under the watch. The pair beside the officer
+                // shares a grenade. The other two are their own drops.
+                let men = [(23, 30), (25, 30), (20, 29), (28, 29)];
+                for (index, (tx, ty)) in men.into_iter().enumerate() {
+                    self.soldiers[index + 1] = Soldier {
+                        x: (tx * 8 + 4) << 8,
+                        y: (ty * 8 + 4) << 8,
+                        dir: -80,
+                        step: 0,
+                        home_tx: tx,
+                        home_ty: ty,
+                        officer: false,
+                        objective: true,
+                        hp: HP_MAN,
+                        cool: 40,
+                        alive: true,
+                    };
+                }
+            }
+            Task::Pits => {
+                let men = [
+                    (16, 29),
+                    (18, 29),
+                    (24, 29),
+                    (28, 29),
+                    (12, 21),
+                    (16, 21),
+                    (26, 21),
+                    (32, 21),
+                ];
+                for (index, (tx, ty)) in men.into_iter().enumerate() {
+                    self.soldiers[index] = Soldier {
+                        x: (tx * 8 + 4) << 8,
+                        y: (ty * 8 + 4) << 8,
+                        dir: 80,
+                        step: 0,
+                        home_tx: tx,
+                        home_ty: ty,
+                        officer: false,
+                        objective: true,
+                        hp: HP_MAN,
+                        cool: 40,
+                        alive: true,
+                    };
+                }
+                let wrecks = [
+                    (14, 34, HUSK_TANK, false),
+                    (34, 34, HUSK_TANK, true),
+                    (10, 26, HUSK_TANK, false),
+                    (36, 24, HUSK_TRUCK, true),
+                    (12, 16, HUSK_TRUCK, false),
+                    (30, 16, HUSK_TANK, false),
+                    (20, 36, HUSK_TRUCK, true),
+                    (38, 30, HUSK_TRUCK, false),
+                ];
+                for (tx, ty, kind, vertical) in wrecks {
+                    let dir = if vertical { 80 } else { 40 };
+                    self.leave_husk((tx * 8 + 4) << 8, (ty * 8 + 4) << 8, dir, vertical, kind);
+                }
+            }
             _ => {}
         }
     }
@@ -549,10 +725,13 @@ impl super::World {
     pub(crate) fn claim(&mut self, officer: bool, truck: bool, goal: bool, objective: bool) {
         let counts = match task_of(self.level) {
             Task::Officer => officer,
-            Task::Trench => objective && !truck,
+            Task::Hearth | Task::Trench | Task::Pits | Task::Grove | Task::Thaw => {
+                objective && !truck
+            }
             Task::Night | Task::Heat | Task::Guide | Task::Column | Task::Lane | Task::Dart
             | Task::Bend => truck && objective,
             Task::Convoy | Task::Cover => goal,
+            Task::Drift => goal || objective && !truck,
             Task::Fpv => objective,
             Task::Rush => objective && !truck,
             Task::Nest => objective && !truck,
@@ -567,8 +746,10 @@ impl super::World {
     }
 
     pub(crate) fn claim_armor(&mut self) {
-        if matches!(task_of(self.level), Task::Armor | Task::Flare | Task::Fetch)
-            && self.targets > 0
+        if matches!(
+            task_of(self.level),
+            Task::Armor | Task::Flare | Task::Fetch | Task::Thaw
+        ) && self.targets > 0
         {
             self.targets -= 1;
             self.sfx |= SFX_MARK;
@@ -736,15 +917,12 @@ impl super::World {
         self.view_tx = tx;
         self.view_ty = ty;
         pump();
-        let mut rows = 0u32;
         for y in (ty - SPAN)..=(ty + SPAN) {
             for x in (tx - SPAN)..=(tx + SPAN) {
                 self.blit(x, y);
             }
-            rows += 1;
-            if rows & 1 == 0 {
-                pump();
-            }
+            // One row is already most of a frame. Two rows replayed the music.
+            pump();
         }
     }
 
@@ -760,17 +938,31 @@ impl super::World {
             let dir = if tx > self.view_tx { 1 } else { -1 };
             self.view_tx += dir;
             let col = self.view_tx + dir * SPAN;
+            pump();
+            let mut wrote = 0u32;
             for y in (self.view_ty - SPAN)..=(self.view_ty + SPAN) {
                 self.blit(col, y);
+                wrote += 1;
+                if wrote & 7 == 0 {
+                    pump();
+                }
             }
+            pump();
         }
         while self.view_ty != ty {
             let dir = if ty > self.view_ty { 1 } else { -1 };
             self.view_ty += dir;
             let row = self.view_ty + dir * SPAN;
+            pump();
+            let mut wrote = 0u32;
             for x in (self.view_tx - SPAN)..=(self.view_tx + SPAN) {
                 self.blit(x, row);
+                wrote += 1;
+                if wrote & 7 == 0 {
+                    pump();
+                }
             }
+            pump();
         }
     }
 
@@ -877,6 +1069,13 @@ impl super::World {
     }
 
     pub(crate) fn consider_tile(&mut self, tx: i32, ty: i32) {
+        // The pits are already manned and the armour is already dead.
+        // Fetch is the caches and the three tanks. A trench rifle under the
+        // hatch makes the sit impossible, and the tanks' own guns still
+        // cover the way in.
+        if matches!(task_of(self.level), Task::Pits | Task::Fetch) || winter_card(self.level) {
+            return;
+        }
         let seeded = terrain(self.level, tx, ty);
         if seeded == T_TRENCH && hash(tx, ty) % 6 == 1 {
             if self.ground_at(tx, ty) == T_TRENCH && !self.is_quiet(tx, ty) {

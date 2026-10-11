@@ -7,7 +7,7 @@ use agb::{
         },
         tiled::AffineBackgroundId,
     },
-    fixnum::{Num, num, rect, vec2},
+    fixnum::{Num, rect, vec2},
     interrupt::{self, Interrupt},
 };
 
@@ -107,36 +107,85 @@ pub(crate) fn draw_select(
     sensor: Sensor,
     glass: Option<u8>,
 ) {
-    match sensor {
-        Sensor::Night => {
-            show(frame, sprites::MOON.sprite(0), 176, 4);
-            for (x, y) in [(12, 8), (36, 22), (168, 28), (200, 14), (148, 6)] {
-                show(frame, sprites::STAR.sprite(0), x, y);
-            }
-        }
-        Sensor::Day | Sensor::Winter => {
-            show(frame, sprites::CLOUD.sprite(0), 8, 16);
-            show(frame, sprites::CLOUD.sprite(1), 148, 8);
-            show(frame, sprites::SUN.sprite(0), 176, 4);
-        }
-        Sensor::Heat | Sensor::Ir => {}
-    }
-    draw_digits(frame, level as i32 + 1, 2, 112, 48);
+    // The operator's screen. Blue desktop, one window, the target in the frame.
+    draw_digits(frame, level as i32 + 1, 2, 8, 4);
+    show_small_at(frame, b"MISSION", 28, 4);
     let (top, bottom) = mission_title(level);
-    show_lockup(frame, top, bottom, 62);
-    show_stars(frame, marks, 84);
+    show_lockup_at(frame, top, bottom, 8, 16);
+    let (craft, sight, order, note) = mission_brief(level, sensor);
+    show_small_at(frame, craft, 8, 42);
+    show_small_at(frame, sight, 8, 54);
     if let Some(which) = glass {
-        show(frame, sprites::GLASS.sprite(which as usize), 104, 104);
+        show(frame, sprites::GLASS.sprite(which as usize), 8, 64);
     }
+    show_small_at(frame, order, 8, 78);
+    show_small_at(frame, note, 8, 90);
+    show_stars_at(frame, marks, 8, 112);
+    show_target(frame, level);
     let step = (age / 6).rem_euclid(6);
     let nudge = if step < 4 { step } else { 6 - step };
     if can_left {
-        show_flip(frame, sprites::ARROW.sprite(0), 4 - nudge, 66, true, false);
+        show_flip(frame, sprites::ARROW.sprite(0), 4 - nudge, 132, true, false);
     }
     if can_right {
-        show_flip(frame, sprites::ARROW.sprite(0), 220 + nudge, 66, false, false);
+        show_flip(frame, sprites::ARROW.sprite(0), 220 + nudge, 132, false, false);
     }
-    draw_load_land(frame, 0);
+}
+
+/// The still in the window. One photograph per card, reduced to colours the cartridge already has.
+fn show_target(frame: &mut agb::display::GraphicsFrame, level: u8) {
+    let index = (level as usize) % LEVEL_COUNT as usize;
+    show(frame, sprites::STILLS.sprite(index), 168, 36);
+}
+
+/// Aircraft, sight, then the two lines you need before the stick goes forward.
+fn mission_brief(level: u8, sensor: Sensor) -> (&'static [u8], &'static [u8], &'static [u8], &'static [u8]) {
+    let craft: &'static [u8] = match task_of(level) {
+        Task::Fpv | Task::Nest | Task::Dart => b"KAMIKAZE",
+        Task::Guide | Task::Column | Task::Rush | Task::Push | Task::Bend => b"SPOTTER",
+        Task::Fetch => b"MINE QUAD",
+        _ => b"RECON QUAD",
+    };
+    let sight: &'static [u8] = match sensor {
+        Sensor::Day => b"DAY",
+        Sensor::Night => b"NIGHT SIGHT",
+        Sensor::Heat => b"HEAT SIGHT",
+        Sensor::Ir => b"INFRARED",
+        Sensor::Winter => b"WINTER DAY",
+    };
+    let (order, note): (&'static [u8], &'static [u8]) = match task_of(level) {
+        Task::Officer => (b"1 KILL THE OFFICER", b"2 GUN OR GRENADES"),
+        Task::Trench => (b"1 SIX MEN IN TRENCH", b"2 BOMBS AND GRENADES"),
+        Task::Hq => (b"1 BREAK SIX ROOF TILES", b"2 BOMBS AND SHELLS"),
+        Task::Convoy => (b"1 STOP THE TRUCK", b"2 THREE BOMBS"),
+        Task::Night => (b"1 THREE TRUCKS", b"2 SIX BOMBS"),
+        Task::Heat => (b"1 THREE HOT TRUCKS", b"2 SIX BOMBS"),
+        Task::Gate => (b"1 FLY THE HEIGHT GAP", b"2 NO WEAPONS"),
+        Task::Guide => (b"1 MARK THREE TRUCKS", b"2 ARTILLERY FIRES"),
+        Task::Column => (b"1 LEAD THE COLUMN", b"2 ARTILLERY FIRES"),
+        Task::Armor => (b"1 THREE TANKS", b"2 MINES AND BOMBS"),
+        Task::Pill => (b"1 THREE BUNKERS", b"2 SIX SHELLS"),
+        Task::Fpv => (b"1 EIGHT TARGETS", b"2 SIX DRONES"),
+        Task::Lane => (b"1 THREE TRUCKS", b"2 STAY OUT OF GUNS"),
+        Task::Rush => (b"1 STOP SIX MEN", b"2 ARTILLERY FIRES"),
+        Task::Flare => (b"1 THREE TANKS", b"2 GUNS ON THE LANE"),
+        Task::Nest => (b"1 FOUR NESTS", b"2 FIVE DRONES"),
+        Task::Dart => (b"1 THREE TRUCKS", b"2 FOUR DRONES"),
+        Task::Push => (b"1 NINE ON THE PUSH", b"2 ARTILLERY FIRES"),
+        Task::Skirt => (b"1 THREE BUNKERS", b"2 PAST THE GUNS"),
+        Task::Bend => (b"1 THREE TRUCKS", b"2 STAY LOW"),
+        Task::Fetch if haul_card(level) => (b"1 THREE TANKS", b"2 MINES ARE FAR"),
+        Task::Fetch => (b"1 THREE TANKS", b"2 ONE MINE EACH"),
+        Task::Swarm if defend_card(level) => (b"1 HOLD THE PAD", b"2 EIGHT AIRCRAFT"),
+        Task::Swarm => (b"1 SIX QUADS", b"2 GUN ONLY"),
+        Task::Cover => (b"1 AIR AND ONE TRUCK", b"2 GUN THEN A BOMB"),
+        Task::Pits => (b"1 EIGHT IN THE PITS", b"2 GRENADES AND GUN"),
+        Task::Grove => (b"1 EIGHT IN THE WOOD", b"2 GUN AND FEW BOMBS"),
+        Task::Drift => (b"1 TRUCK AND THREE MEN", b"2 BOMB THE TRUCK"),
+        Task::Thaw => (b"1 TANKS AND FOUR MEN", b"2 MINES THEN THE GUN"),
+        Task::Hearth => (b"1 OFFICER AND FOUR", b"2 STAY ABOVE 20"),
+    };
+    (craft, sight, order, note)
 }
 
 fn mission_title(level: u8) -> (&'static [u8], &'static [u8]) {
@@ -166,31 +215,45 @@ fn mission_title(level: u8) -> (&'static [u8], &'static [u8]) {
         Task::Swarm if defend_card(level) => (b"THE", b"CROWS"),
         Task::Swarm => (b"THE", b"SWARM"),
         Task::Cover => (b"COVER", b"FIRE"),
+        Task::Pits => (b"ASH", b"PITS"),
+        Task::Grove => (b"SNOW", b"WOOD"),
+        Task::Drift => (b"SNOW", b"ROAD"),
+        Task::Thaw => (b"MUD", b"IRON"),
+        Task::Hearth => (b"PINE", b"POST"),
+    }
+}
+
+/// Width of a card title letter. The face is the condensed briefing cut, not the splash.
+fn card_advance(ch: u8) -> i32 {
+    match ch {
+        b' ' => 4,
+        b'I' => 3,
+        b'J' => 6,
+        b'A' => 9,
+        b'M' => 10,
+        b'W' => 12,
+        b'K' | b'Q' | b'R' | b'V' | b'X' | b'Y' => 8,
+        _ => 7,
     }
 }
 
 /// Both words on one line, with a gap, so the card is a title and not a stack.
-fn show_lockup(
+fn show_lockup_at(
     frame: &mut agb::display::GraphicsFrame,
     top: &[u8],
     bottom: &[u8],
+    mut x: i32,
     y: i32,
 ) {
-    let measure = |text: &[u8]| -> i32 {
-        text.iter()
-            .map(|&ch| if ch == b' ' { 8 } else { 15 })
-            .sum()
-    };
-    let mut x = (WIDTH - (measure(top) + 10 + measure(bottom))) / 2;
     for (index, text) in [top, bottom].into_iter().enumerate() {
         for &ch in text {
             if ch != b' ' {
-                show(frame, sprites::FONT.sprite(glyph(ch)), x - 1, y);
+                show(frame, sprites::CARD.sprite(glyph(ch)), x, y);
             }
-            x += if ch == b' ' { 8 } else { 15 };
+            x += card_advance(ch);
         }
         if index == 0 {
-            x += 10;
+            x += 6;
         }
     }
 }
@@ -211,24 +274,20 @@ pub(crate) fn show_face(frame: &mut agb::display::GraphicsFrame, text: &[u8], y:
     }
 }
 
-fn show_stars(frame: &mut agb::display::GraphicsFrame, marks: u8, y: i32) {
-    let x = (WIDTH - 56) / 2;
+fn show_stars_at(frame: &mut agb::display::GraphicsFrame, marks: u8, x: i32, y: i32) {
     for index in 0..3 {
         let which = if marks & (1 << index) != 0 { 1 } else { 0 };
         show(frame, sprites::MEDAL.sprite(which), x + index * 20, y);
     }
 }
 
-fn draw_load_land(frame: &mut agb::display::GraphicsFrame, pan: i32) {
-    let scroll = pan / 3;
-    let spacing = 28;
-    let first = scroll.div_euclid(spacing) * spacing;
-    let mut x = first - scroll - spacing;
-    while x < WIDTH {
-        let n = (hash((x + scroll) / spacing, 1) % 8) as usize;
-        let lift = (hash((x + scroll) / spacing, 3) % 4) as i32;
-        show_haze(frame, sprites::HORIZON.sprite(n), x, 146 - lift, false);
-        x += spacing;
+fn show_small_at(frame: &mut agb::display::GraphicsFrame, text: &[u8], mut x: i32, y: i32) {
+    for &ch in text {
+        let adv = if ch == b' ' { 4 } else { 6 };
+        if ch != b' ' && (-8..HEIGHT).contains(&y) && (-8..WIDTH).contains(&x) {
+            show(frame, sprites::SMALL.sprite(glyph(ch)), x, y);
+        }
+        x += adv;
     }
 }
 
@@ -260,6 +319,11 @@ pub(crate) fn mission_card(level: u8) -> &'static Sprite {
         Task::Swarm if defend_card(level) => sprites::LVL_CROWS.sprite(0),
         Task::Swarm => sprites::LVL_SWARM.sprite(0),
         Task::Cover => sprites::LVL_COVER.sprite(0),
+        Task::Pits => sprites::LVL_TRENCH.sprite(0),
+        Task::Grove => sprites::LVL_TRENCH.sprite(0),
+        Task::Drift => sprites::LVL_CONVOY.sprite(0),
+        Task::Thaw => sprites::LVL_ARMOR.sprite(0),
+        Task::Hearth => sprites::LVL_OFFICER.sprite(0),
     }
 }
 
@@ -695,54 +759,42 @@ pub(crate) fn nadir_scale(alt: i32) -> i32 {
     ((alt >> 8).max(8) / 8).clamp(1, 4)
 }
 
-/// Flat glass. Scanline 88, pixel 120 is the ground under the airframe.
-pub(crate) fn floor_nadir(
-    origin_x: Num<i32, 8>,
-    origin_y: Num<i32, 8>,
-    sin: Num<i32, 8>,
-    cos: Num<i32, 8>,
-    scanline: i32,
-    scale: i32,
-) -> FloorLine {
-    let step_x = (cos.to_raw() * scale).clamp(-32767, 32767) as i16;
-    let step_y = (sin.to_raw() * scale).clamp(-32767, 32767) as i16;
-    let right = Num::<i32, 8>::new(-120 * scale);
-    let ahead = Num::<i32, 8>::new((88 - scanline) * scale);
-    let horizontal = origin_x + right * cos + ahead * sin;
-    let vertical = origin_y + right * sin - ahead * cos;
-    FloorLine {
-        a: step_x,
-        b: 0,
-        c: step_y,
-        d: 0,
-        x: horizontal.to_raw(),
-        y: vertical.to_raw(),
-    }
+/// The affine step fits in a signed byte-pair. Past ±100 the road bends.
+fn clamp_step(value: i32) -> i16 {
+    value.clamp(-100 << 8, 100 << 8) as i16
 }
 
-pub(crate) fn floor_line(
-    origin_x: Num<i32, 8>,
-    origin_y: Num<i32, 8>,
-    height: Num<i32, 8>,
-    sin: Num<i32, 8>,
-    cos: Num<i32, 8>,
+/// One ground line, in register units. Integer multiply, not the fixed-point
+/// helper: that helper splits every product into four multiplies, and this
+/// runs once per scanline.
+fn perspective_line(
+    origin_x: i32,
+    origin_y: i32,
+    alt: i32,
+    sin: i32,
+    cos: i32,
     scanline: i32,
     horizon: i32,
-) -> (Num<i32, 8>, Num<i32, 8>, Num<i32, 8>, Num<i32, 8>) {
+) -> FloorLine {
     let rel = (scanline - horizon).max(1);
-    let mut lambda = height * Num::new(FLOOR_ZOOM) / Num::new(rel);
-    if lambda > num!(8) {
-        lambda = num!(8);
+    let mut lambda = alt.saturating_mul(FLOOR_ZOOM) / rel;
+    if lambda > 8 << 8 {
+        lambda = 8 << 8;
     }
     // One perspective for the whole line. A straight road then stays a
     // straight line on screen. Changing the distance without the scale bends it.
-    let along = lambda * Num::new(FOCAL);
-    let lcf = lambda * cos;
-    let lsf = lambda * sin;
-    // Screen centre looks along (sin, -cos). Pixel 0 is the left edge.
-    let horizontal = origin_x - lcf * Num::new(WIDTH / 2) + sin * along;
-    let vertical = origin_y - lsf * Num::new(WIDTH / 2) - cos * along;
-    (horizontal, vertical, lcf, lsf)
+    let along = lambda.saturating_mul(FOCAL);
+    let lcf = (lambda * cos) >> 8;
+    let lsf = (lambda * sin) >> 8;
+    let half = WIDTH / 2;
+    FloorLine {
+        a: clamp_step(lcf),
+        b: 0,
+        c: clamp_step(lsf),
+        d: 0,
+        x: origin_x - lcf * half + ((sin * along) >> 8),
+        y: origin_y - lsf * half - ((cos * along) >> 8),
+    }
 }
 
 /// One scanline of the mode 7 floor, in register units (8.8 fixed point).
@@ -844,48 +896,46 @@ pub(crate) fn publish_floor() {
 }
 
 pub(crate) fn build_floor(cam_x: i32, cam_y: i32, alt: i32, yaw: Num<i32, 8>, horizon: i32) {
-    let height = Num::<i32, 8>::from_raw(alt);
-    let origin_x = Num::<i32, 8>::from_raw(cam_x);
-    let origin_y = Num::<i32, 8>::from_raw(cam_y);
-    let cos = yaw.cos();
-    let sin = yaw.sin();
+    let cos = yaw.cos().to_raw();
+    let sin = yaw.sin().to_raw();
     let down = nadir_on();
     unsafe {
         let back = *FLOOR.front.get() ^ 1;
         let buf = &mut (*FLOOR.lines.get())[back];
-        for scanline in 0..HEIGHT {
-            // Absolute position for this line. pb and pd stay 0: the beam
-            // must not take an extra step after we write the point.
-            buf[scanline as usize] = if down > 0 {
-                floor_nadir(origin_x, origin_y, sin, cos, scanline, down)
-            } else {
-                let (horizontal, vertical, lcf, lsf) =
-                    floor_line(origin_x, origin_y, height, sin, cos, scanline, horizon);
-                FloorLine {
-                    a: narrow(lcf).to_raw(),
+        if down > 0 {
+            // Flat glass. Scanline 88, pixel 120 is the ground under the airframe.
+            // The step is the same on every line. Only the origin walks.
+            let step_x = (cos * down).clamp(-32767, 32767) as i16;
+            let step_y = (sin * down).clamp(-32767, 32767) as i16;
+            let right = (-120 * down) << 8;
+            let cos_right = (right * cos) >> 8;
+            let sin_right = (right * sin) >> 8;
+            for scanline in 0..HEIGHT {
+                let ahead = ((88 - scanline) * down) << 8;
+                buf[scanline as usize] = FloorLine {
+                    a: step_x,
                     b: 0,
-                    c: narrow(lsf).to_raw(),
+                    c: step_y,
                     d: 0,
-                    x: horizontal.to_raw(),
-                    y: vertical.to_raw(),
-                }
-            };
+                    x: cam_x + cos_right + ((ahead * sin) >> 8),
+                    y: cam_y + sin_right - ((ahead * cos) >> 8),
+                };
+            }
+        } else {
+            // Above the horizon every line is the same vanishing point.
+            let start = horizon.clamp(0, HEIGHT - 1);
+            let sky = perspective_line(cam_x, cam_y, alt, sin, cos, start, horizon);
+            for scanline in 0..=start {
+                buf[scanline as usize] = sky;
+            }
+            for scanline in (start + 1)..HEIGHT {
+                buf[scanline as usize] =
+                    perspective_line(cam_x, cam_y, alt, sin, cos, scanline, horizon);
+            }
         }
         buf[160] = buf[159];
         buf[161] = buf[159];
     }
-}
-
-pub(crate) fn narrow(value: Num<i32, 8>) -> Num<i16, 8> {
-    let limit = Num::<i32, 8>::new(100);
-    let value = if value > limit {
-        limit
-    } else if value < -limit {
-        -limit
-    } else {
-        value
-    };
-    value.try_change_base().unwrap_or(Num::new(0))
 }
 
 fn ground_point(
@@ -1155,6 +1205,25 @@ pub(crate) fn show_soldier(
     wreck: bool,
 ) {
     let scale = body_scale(sy, horizon, alt, 8, 22);
+    if wreck {
+        // The sheet's last cell is a body on the ground, not a man still standing.
+        show_figure(
+            frame,
+            sprites::SOLDIER.sprite(16),
+            sx,
+            sy,
+            32,
+            32,
+            18,
+            26,
+            scale.span,
+            false,
+            sensor,
+            true,
+        );
+        show_shadow(frame, sx, sy, scale.span, false, 3, yaw, horizon, sensor, 4);
+        return;
+    }
     let (fx, fy) = if soldier.dir == 0 {
         (0, -1)
     } else {
@@ -1435,16 +1504,22 @@ pub(crate) fn show_small(frame: &mut agb::display::GraphicsFrame, text: &[u8], y
     }
 }
 
-/// Studio card. The stone settles, then the whole lockup, on one centre line.
+/// Title card. The name is drawn first, so it sits on the photograph.
 pub(crate) fn draw_studio(frame: &mut agb::display::GraphicsFrame, age: i32) {
-    let t = age.min(12);
-    let dy = (12 - t) * (12 - t) / 8;
-    show(frame, sprites::MARBLE.sprite(0), 104, 2 + dy);
-    show_small(frame, b"2026", 146);
-    if age >= 14 {
-        show_face(frame, b"MARBLE ZOO", 40);
-        show_face(frame, b"games", 58);
-        show(frame, sprites::WORD.sprite(0), 88, 80);
+    show_face(frame, b"DRONE", 0);
+    if (age / 28).rem_euclid(2) == 0 {
+        show_face(frame, b"PRESS START", 124);
+    }
+    show_small(frame, b"MARBLE ZOO", 144);
+    show_small(frame, b"2026", 152);
+    for index in 0..12 {
+        let index = index as i32;
+        show(
+            frame,
+            sprites::TITLE.sprite(index as usize),
+            (index % 4) * 64,
+            (index / 4) * 64,
+        );
     }
 }
 
@@ -1660,6 +1735,27 @@ pub(crate) fn draw_digits(
     }
 }
 
+fn draw_dashes(frame: &mut agb::display::GraphicsFrame, count: i32, x: i32, y: i32) {
+    for index in 0..count {
+        show(frame, sprites::DIGITS.sprite(10), x + index * 8, y);
+    }
+}
+
+fn draw_readout(
+    frame: &mut agb::display::GraphicsFrame,
+    value: i32,
+    count: i32,
+    x: i32,
+    y: i32,
+    blind: bool,
+) {
+    if blind {
+        draw_dashes(frame, count, x, y);
+    } else {
+        draw_digits(frame, value, count, x, y);
+    }
+}
+
 /// Three stars under a cleared card. Gold is earned. Grey is still open.
 pub(crate) fn show_ribbon(
     frame: &mut agb::display::GraphicsFrame,
@@ -1684,9 +1780,10 @@ pub(crate) fn draw_cockpit(
     world: &World,
     sin_r: i32,
     cos_r: i32,
+    blind: bool,
 ) {
     draw_sight(frame, world);
-    draw_gauges(frame, world);
+    draw_gauges(frame, world, blind);
 
     let inst_y = 112;
     let pitch_shift = (-world.pitch.to_raw() / 6).clamp(-8, 8);
@@ -1999,10 +2096,14 @@ pub(crate) fn show_fit(
 }
 
 /// Red mark is the airframe, yellow is the battery, the snow icon is the radio.
-pub(crate) fn draw_gauges(frame: &mut agb::display::GraphicsFrame, world: &World) {
+pub(crate) fn draw_gauges(frame: &mut agb::display::GraphicsFrame, world: &World, blind: bool) {
     show(frame, sprites::BLIP.sprite(0), 4, 18);
-    draw_digits(frame, world.hull.clamp(0, 100), 3, 4, 28);
-    let fill = (world.hull.clamp(0, 100) * 10 / 100) as usize;
+    draw_readout(frame, world.hull.clamp(0, 100), 3, 4, 28, blind);
+    let fill = if blind {
+        0
+    } else {
+        (world.hull.clamp(0, 100) * 10 / 100) as usize
+    };
     show(frame, sprites::HULL.sprite(fill), 0, 40);
     let wep = match world.arm {
         ARM_GUN => 0,
@@ -2020,10 +2121,10 @@ pub(crate) fn draw_gauges(frame: &mut agb::display::GraphicsFrame, world: &World
         _ => Some(world.vog),
     };
     if let Some(ammo) = ammo {
-        draw_digits(frame, ammo, 2, 8, 70);
+        draw_readout(frame, ammo, 2, 8, 70, blind);
     }
     show(frame, sprites::BLIP.sprite(1), WIDTH - 28, 18);
-    draw_digits(frame, world.battery.clamp(0, 100), 3, WIDTH - 28, 28);
+    draw_readout(frame, world.battery.clamp(0, 100), 3, WIDTH - 28, 28, blind);
     let signal = (100 - world.signal_loss() * 100 / 16).clamp(0, 100);
     show(
         frame,
@@ -2031,7 +2132,7 @@ pub(crate) fn draw_gauges(frame: &mut agb::display::GraphicsFrame, world: &World
         WIDTH - 28,
         46,
     );
-    draw_digits(frame, signal, 3, WIDTH - 28, 56);
+    draw_readout(frame, signal, 3, WIDTH - 28, 56, blind);
 }
 
 /// Canopy crack and extra snow once the airframe is badly hit.
@@ -2045,10 +2146,20 @@ pub(crate) fn draw_hurt(frame: &mut agb::display::GraphicsFrame, world: &World) 
     }
 }
 
-pub(crate) fn draw_noise(frame: &mut agb::display::GraphicsFrame, age: i32) {
-    let jx = (hash(age, 1) % 4) as i32;
-    let jy = (hash(age, 3) % 4) as i32;
+pub(crate) fn draw_noise(frame: &mut agb::display::GraphicsFrame, age: i32, sealed: bool) {
+    let jx = if sealed { 0 } else { (hash(age, 1) % 4) as i32 };
+    let jy = if sealed { 0 } else { (hash(age, 3) % 4) as i32 };
     let flip = (age as usize / 2) % 2;
+    // The snow is bright. A dark lip sits on its top edge so those pixels
+    // cannot climb into the instrument bar.
+    if sealed {
+        let mut x = VIEW_X;
+        while x < VIEW_X + VIEW_W {
+            show(frame, sprites::LIP.sprite(0), x, VIEW_Y);
+            x += 32;
+        }
+    }
+    // Three tiles cover the glass edge to edge. Jitter is only for the short flash.
     let xs = [VIEW_X, VIEW_X + 64, VIEW_X + VIEW_W - 64];
     let ys = [VIEW_Y, VIEW_Y + 64, VIEW_Y + VIEW_H - 64];
     for (row, y) in ys.into_iter().enumerate() {
@@ -2303,20 +2414,46 @@ pub(crate) fn ir_ground(colour: u16) -> u16 {
     v | (v << 5) | (v << 10)
 }
 
-/// Snow. Dark tiles stay readable (roads, trunks, trenches). Grass goes pale.
+/// Dirty snow, brown mud, and a sulfur crust. Trenches and burned ground stay dark.
 pub(crate) fn winter_ground(colour: u16) -> u16 {
     let (r, g, b) = channels(colour);
-    if b > r + 4 && b > g {
-        let v = (b / 2 + 4).min(18) as u16;
-        return (v / 3) | ((v / 2) << 5) | (v << 10);
+    if r == 0 && g == 0 && b == 0 {
+        return 0;
     }
     let y = luma(colour);
-    if y < 10 {
-        let v = (y / 2 + 4).min(12) as u16;
-        return v | (v << 5) | ((v + 1).min(31) << 10);
+    let pack = |r: i32, g: i32, b: i32| -> u16 {
+        let r = r.clamp(0, 31) as u16;
+        let g = g.clamp(0, 31) as u16;
+        let b = b.clamp(0, 31) as u16;
+        r | (g << 5) | (b << 10)
+    };
+    // Ponds go yellow: sulfur water, not ice. The pale sky tile is a patch of white snow.
+    if b > r + 2 && b > g {
+        if r >= 12 && b - g <= 4 {
+            return pack(31, 31, 30);
+        }
+        let v = 14 + y / 3;
+        return pack(v, v - 4, v / 5);
     }
-    let v = (16 + y / 2).min(31) as u16;
-    v | (v << 5) | ((v - 1) << 10)
+    // Grass is snow. The lighter blades are white, the rest a warm grey.
+    if g > r && g >= b {
+        if y >= 14 {
+            return pack(31, 31, 30);
+        }
+        let v = 22 + y / 2;
+        return pack(v, v, v - 2);
+    }
+    // The trench and the burned mud stay dark enough to read.
+    if y < 6 {
+        return pack(y / 2 + 1, y / 2 + 1, y / 4);
+    }
+    // Light earth is a sulfur crust. The rest stays brown mud.
+    if y >= 16 {
+        let v = 18 + (y - 16) / 2;
+        return pack(v, v * 3 / 4, v / 5);
+    }
+    let v = 10 + y / 2;
+    pack(v, v * 2 / 3, v / 3)
 }
 
 pub(crate) fn cold_ground(colour: u16) -> u16 {
@@ -2421,6 +2558,8 @@ fn tone_of(sprite: &'static Sprite) -> Option<Tone> {
             &sprites::BUNKER_TOP,
             &sprites::HQ,
             &sprites::HQ_NEAR,
+            &sprites::FOE,
+            &sprites::GERAN,
         ],
     ) {
         Some(Tone::Warm)
@@ -2641,7 +2780,7 @@ pub(crate) fn draw_radar_goals(
 
 pub(crate) fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
     match task_of(world.level) {
-        Task::Trench | Task::Officer => {
+        Task::Trench | Task::Officer | Task::Pits | Task::Grove | Task::Hearth => {
             nearest_marked(world, pts, true, false)
         }
         Task::Night | Task::Heat | Task::Guide | Task::Column => {
@@ -2651,7 +2790,7 @@ pub(crate) fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
         Task::Push => nearest_marked(world, pts, true, true),
         Task::Lane | Task::Dart | Task::Bend => nearest_marked(world, pts, false, true),
         Task::Nest => nearest_marked(world, pts, true, false),
-        Task::Flare | Task::Armor => {
+        Task::Flare | Task::Armor | Task::Thaw => {
             let mut n = 0;
             for tank in &world.tanks {
                 if tank.alive && tank.objective && n < 3 {
@@ -2671,7 +2810,7 @@ pub(crate) fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
             }
             n
         }
-        Task::Convoy | Task::Cover => world
+        Task::Convoy | Task::Cover | Task::Drift => world
             .trucks
             .iter()
             .find(|truck| truck.alive && truck.goal)
@@ -2805,32 +2944,32 @@ pub(crate) fn isqrt64(n: i64) -> i64 {
     x
 }
 
-pub(crate) fn draw_hud(frame: &mut agb::display::GraphicsFrame, world: &World) {
+pub(crate) fn draw_hud(frame: &mut agb::display::GraphicsFrame, world: &World, blind: bool) {
     show(frame, sprites::LBL_SCORE.sprite(0), 0, 0);
-    draw_digits(frame, world.score, 4, 32, 0);
+    draw_readout(frame, world.score, 4, 32, 0, blind);
     show(frame, sprites::LBL_ALT.sprite(0), 96, 0);
-    draw_digits(frame, world.alt >> 8, 2, 128, 0);
+    draw_readout(frame, world.alt >> 8, 2, 128, 0, blind);
     if world.mode == Mode::Guide && world.guide > 0 {
         let secs = ((world.guide as i32) + 59) / 60;
-        draw_digits(frame, secs, 1, VIEW_X + VIEW_W / 2 - 4, VIEW_Y + 6);
+        draw_readout(frame, secs, 1, VIEW_X + VIEW_W / 2 - 4, VIEW_Y + 6, blind);
     }
     if world.mode != Mode::Fpv && world.mode != Mode::Guide {
         show(frame, sprites::LBL_BOMB.sprite(0), 0, 8);
-        draw_digits(frame, world.bombs, 2, 32, 8);
+        draw_readout(frame, world.bombs, 2, 32, 8, blind);
         show(frame, sprites::LBL_HE.sprite(0), 56, 8);
-        draw_digits(frame, world.he, 2, 88, 8);
+        draw_readout(frame, world.he, 2, 88, 8, blind);
         show(frame, sprites::LBL_MINE.sprite(0), 112, 8);
-        draw_digits(frame, world.mines, 2, 144, 8);
+        draw_readout(frame, world.mines, 2, 144, 8, blind);
         show(frame, sprites::LBL_VOG.sprite(0), 168, 8);
-        draw_digits(frame, world.vog, 2, 200, 8);
+        draw_readout(frame, world.vog, 2, 200, 8, blind);
     }
     if world.mode == Mode::Fpv {
         show(frame, sprites::LBL_DRONE.sprite(0), 160, 0);
-        draw_digits(frame, world.drones, 1, 176, 0);
+        draw_readout(frame, world.drones, 1, 176, 0, blind);
     }
     // How many mission marks are still left.
     show(frame, sprites::DOT.sprite(0), WIDTH - 28, 72);
-    draw_digits(frame, world.targets, 2, WIDTH - 28, 80);
+    draw_readout(frame, world.targets, 2, WIDTH - 28, 80, blind);
 }
 
 pub(crate) fn draw_world(
@@ -2861,6 +3000,13 @@ pub(crate) fn draw_world(
         // Monochrome glass, and a hatch cook-off, are the white flash then the cloud.
         if matches!(sensor, Sensor::Ir) || boom.plume {
             show_smoke(frame, sx, sy, boom.frame);
+            continue;
+        }
+        // A bullet or a grenade is a spark. The fireball is a bomb or a shell.
+        if boom.radius <= 4 {
+            if boom.frame < 12 {
+                show_spark(frame, sx, sy, cockpit);
+            }
             continue;
         }
         let frame_index = boom_sheet(boom.frame);
@@ -3360,15 +3506,14 @@ fn fill_grove(
     horizon: i32,
     floor: i32,
     cockpit: bool,
-    slots: &mut [CrownSlot; 6],
+    cy_from: i32,
+    cy_to: i32,
+    picks: &mut [(i32, i32, i32); 6],
+    slots: &[CrownSlot; 6],
 ) {
-    let tx0 = tile_of(world.x);
-    let ty0 = tile_of(world.y);
-    let cx0 = tx0.div_euclid(3);
-    let cy0 = ty0.div_euclid(3);
-    let mut picks = [(0i32, 0i32, i32::MAX); 6];
+    let cx0 = tile_of(world.x).div_euclid(3);
     let span_y = (HEIGHT - floor).max(1);
-    for cy in (cy0 - 18)..=(cy0 + 18) {
+    for cy in cy_from..=cy_to {
         for cx in (cx0 - 12)..=(cx0 + 12) {
             if hash(cx, cy.wrapping_add(17)) % 6 != 0 {
                 continue;
@@ -3391,13 +3536,16 @@ fn fill_grove(
             let row = ((sy - floor) * 3 / span_y).clamp(0, 2);
             let cell = (row * 2 + col) as usize;
             let cx = if col == 0 { WIDTH / 4 } else { WIDTH * 3 / 4 };
-            let cy = floor + (row * 2 + 1) * span_y / 6;
-            let score = (sx - cx).abs() + (sy - cy).abs();
+            let cy_screen = floor + (row * 2 + 1) * span_y / 6;
+            let score = (sx - cx).abs() + (sy - cy_screen).abs();
             if score < picks[cell].2 {
                 picks[cell] = (tx, ty, score);
             }
         }
     }
+}
+
+fn take_picks(slots: &mut [CrownSlot; 6], picks: &[(i32, i32, i32); 6]) {
     for pick in picks {
         if pick.2 == i32::MAX {
             continue;
@@ -3439,11 +3587,23 @@ static GROVE_HOLD: GroveHold = GroveHold(core::cell::UnsafeCell::new([CrownSlot 
     miss: 0,
 }; 6]));
 
-/// Last camera tile the grove was scanned from. An empty slot does not
-/// search again until the aircraft enters another tile.
-struct GroveScan(core::cell::UnsafeCell<(i32, i32)>);
+/// Last camera tile, and how far the crown search has walked from it.
+/// Two rows a frame. A full pass in one frame replayed the music.
+struct GroveWork {
+    cam_x: i32,
+    cam_y: i32,
+    next: i32,
+    picks: [(i32, i32, i32); 6],
+}
+
+struct GroveScan(core::cell::UnsafeCell<GroveWork>);
 unsafe impl Sync for GroveScan {}
-static GROVE_SCAN: GroveScan = GroveScan(core::cell::UnsafeCell::new((i32::MIN, i32::MIN)));
+static GROVE_SCAN: GroveScan = GroveScan(core::cell::UnsafeCell::new(GroveWork {
+    cam_x: i32::MIN,
+    cam_y: i32::MIN,
+    next: i32::MIN,
+    picks: [(0, 0, i32::MAX); 6],
+}));
 
 fn grove_held(tx: i32, ty: i32, slots: &[CrownSlot; 6]) -> bool {
     slots.iter().any(|slot| slot.tx == tx && slot.ty == ty)
@@ -3583,12 +3743,30 @@ fn draw_grove(
     let cam = (tile_of(world.x), tile_of(world.y));
     let scan = unsafe { &mut *GROVE_SCAN.0.get() };
     if slots.iter().any(|slot| slot.ty == i32::MIN) {
-        if *scan != cam {
-            fill_grove(world, sin_r, cos_r, horizon, floor, cockpit, slots);
-            *scan = cam;
+        if scan.cam_x != cam.0 || scan.cam_y != cam.1 {
+            scan.cam_x = cam.0;
+            scan.cam_y = cam.1;
+            scan.next = cam.1.div_euclid(3) - 18;
+            scan.picks = [(0, 0, i32::MAX); 6];
+        }
+        if scan.next != i32::MIN {
+            let end = scan.cam_y.div_euclid(3) + 18;
+            let from = scan.next;
+            let to = (from + 1).min(end);
+            fill_grove(
+                world, sin_r, cos_r, horizon, floor, cockpit, from, to, &mut scan.picks, slots,
+            );
+            if to >= end {
+                take_picks(slots, &scan.picks);
+                scan.next = i32::MIN;
+            } else {
+                scan.next = to + 1;
+            }
         }
     } else {
-        *scan = (i32::MIN, i32::MIN);
+        scan.cam_x = i32::MIN;
+        scan.cam_y = i32::MIN;
+        scan.next = i32::MIN;
     }
     for slot in slots.iter_mut() {
         if slot.ty == i32::MIN || slot.span != 0 {

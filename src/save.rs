@@ -9,9 +9,10 @@ pub(crate) struct Progress {
     pub(crate) cleared: u32,
     pub(crate) level: u8,
     /// Three bits per card: time, battery, spare. Once set, a mark stays.
-    marks: [u8; 10],
+    /// The first ten bytes are the old record. Two more hold the snow cards.
+    marks: [u8; 12],
     /// Two bits per card: 0 day, 1 night, 2 heat. Day cards only.
-    glass: [u8; 7],
+    glass: [u8; 8],
 }
 
 pub(crate) fn load_progress() -> Progress {
@@ -26,8 +27,8 @@ pub(crate) fn load_progress() -> Progress {
             unlocked: 0,
             cleared: 0,
             level: 0,
-            marks: [0; 10],
-            glass: [0; 7],
+            marks: [0; 12],
+            glass: [0; 8],
         };
     }
     let mut cleared = raw[5] as u32;
@@ -58,13 +59,27 @@ pub(crate) fn load_progress() -> Progress {
     if cleared & (1 << 23) != 0 {
         unlocked = unlocked.max(24).min(LEVEL_COUNT - 1);
     }
-    let mut marks = [0u8; 10];
-    if raw[24] == fold(&raw[14..24], 0x6B) {
-        marks.copy_from_slice(&raw[14..24]);
+    // A finished escort already earned the ash pits added after it.
+    if cleared & (1 << 24) != 0 {
+        unlocked = unlocked.max(25).min(LEVEL_COUNT - 1);
     }
-    let mut glass = [0u8; 7];
+    // A finished ash pits already earned the first snow card added after it.
+    if cleared & (1 << 25) != 0 {
+        unlocked = unlocked.max(26).min(LEVEL_COUNT - 1);
+    }
+    let mut marks = [0u8; 12];
+    if raw[24] == fold(&raw[14..24], 0x6B) {
+        marks[..10].copy_from_slice(&raw[14..24]);
+    }
+    if raw[35] == fold(&raw[33..35], 0x3D) {
+        marks[10..12].copy_from_slice(&raw[33..35]);
+    }
+    let mut glass = [0u8; 8];
     if raw[32] == fold(&raw[25..32], 0xC5) {
-        glass.copy_from_slice(&raw[25..32]);
+        glass[..7].copy_from_slice(&raw[25..32]);
+    }
+    if raw[37] == raw[36] ^ 0xA7 {
+        glass[7] = raw[36];
     }
     Progress {
         unlocked,
@@ -153,7 +168,7 @@ pub(crate) fn store_progress(progress: &Progress) {
     let hi = ((progress.cleared >> 8) & 0xFF) as u8;
     let mid = ((progress.cleared >> 16) & 0xFF) as u8;
     let top = ((progress.cleared >> 24) & 0xFF) as u8;
-    let mut bytes = [0u8; 33];
+    let mut bytes = [0u8; 38];
     bytes[0] = 0x41;
     bytes[1] = 0x52;
     bytes[2] = 0x43;
@@ -168,10 +183,14 @@ pub(crate) fn store_progress(progress: &Progress) {
     bytes[11] = mid ^ 0x3C;
     bytes[12] = top;
     bytes[13] = top ^ 0xC3;
-    bytes[14..24].copy_from_slice(&progress.marks);
+    bytes[14..24].copy_from_slice(&progress.marks[..10]);
     bytes[24] = fold(&bytes[14..24], 0x6B);
-    bytes[25..32].copy_from_slice(&progress.glass);
+    bytes[25..32].copy_from_slice(&progress.glass[..7]);
     bytes[32] = fold(&bytes[25..32], 0xC5);
+    bytes[33..35].copy_from_slice(&progress.marks[10..12]);
+    bytes[35] = fold(&bytes[33..35], 0x3D);
+    bytes[36] = progress.glass[7];
+    bytes[37] = progress.glass[7] ^ 0xA7;
     for (index, byte) in bytes.into_iter().enumerate() {
         unsafe {
             (0x0E00_0000 as *mut u8)
@@ -189,8 +208,8 @@ fn fold(bytes: &[u8], salt: u8) -> u8 {
     out
 }
 
-fn sram_load() -> [u8; 33] {
-    let mut raw = [0u8; 33];
+fn sram_load() -> [u8; 38] {
+    let mut raw = [0u8; 38];
     for (index, byte) in raw.iter_mut().enumerate() {
         *byte = unsafe { (0x0E00_0000 as *const u8).add(index).read_volatile() };
     }
