@@ -19,13 +19,13 @@ A cleared card keeps three marks. Yellow is earned, red is still open, and a mar
 
 ## Missions
 
-1. Officer. One marked man.
-2. Trench. Six soldiers in a line.
-3. Headquarters. Break the marked tiles.
-4. Convoy. Do not let the truck reach the posts.
-5. Night. Three trucks in a short row.
-6. Heat. Three trucks, farther north and wider apart.
-7. Gate. Fly the gap at the required height.
+1. First flight. Hover over the mark, drop one bomb, then descend to 12 and fly between the posts. One extra bomb still clears.
+2. Officer. One marked man.
+3. Trench. Six soldiers in a line.
+4. Headquarters. Break the marked tiles.
+5. Convoy. Do not let the truck reach the posts.
+6. Night. Three trucks in a short row.
+7. Heat. Three trucks, farther north and wider apart.
 8. Guidance. Three parked trucks. The salvo lands under the sight, including from far away.
 9. Column, guidance. Trucks crawl, so the mark has to lead them.
 10. Armour, night. Three tanks far apart. Three bombs near each one are enough. A charge in the hatch takes a tank at once. The bullet does not.

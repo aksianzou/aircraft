@@ -493,7 +493,8 @@ fn main(mut gba: agb::Gba) -> ! {
                 Rgb::new(32, 32, 32)
             } else {
                 match sensor {
-                    Sensor::Night => Rgb::new(1, 8, 2),
+                    // Eight-bit. A small green is shifted away and the day blue stays.
+                    Sensor::Night => Rgb::new(16, 96, 16),
                     Sensor::Heat => Rgb::new(2, 1, 4),
                     Sensor::Ir => Rgb::new(5, 5, 5),
                     Sensor::Day => Rgb::new(120, 152, 168),

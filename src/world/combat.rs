@@ -276,7 +276,7 @@ impl super::World {
     }
 
     pub(crate) fn enemy_fire(&mut self) {
-        if self.mode == Mode::Gate {
+        if matches!(task_of(self.level), Task::Gate) {
             return;
         }
         let alt_px = self.alt >> 8;
@@ -866,8 +866,12 @@ impl super::World {
                 continue;
             }
             // A pair has to stay inside one grenade. The patrol walk splits them.
+            // The post and the pits stand too: a walk leads the drop off the men.
             if self.soldiers[index].objective
-                && matches!(task_of(self.level), Task::Grove | Task::Thaw)
+                && matches!(
+                    task_of(self.level),
+                    Task::Grove | Task::Thaw | Task::Hearth | Task::Pits
+                )
             {
                 continue;
             }
@@ -1290,8 +1294,9 @@ impl super::World {
     }
 
     /// Crossing the gate line either clears the card or sends the plane back.
+    /// The posts stay closed until the hover and the bomb are done.
     pub(crate) fn cross_gate(&mut self) -> bool {
-        if self.mode != Mode::Gate || self.targets <= 0 {
+        if !matches!(task_of(self.level), Task::Gate) || self.targets <= 0 || self.lesson < 2 {
             return true;
         }
         let gy = self.gate_y();
@@ -1310,6 +1315,7 @@ impl super::World {
             self.recover = 22;
             self.vx = 0;
             self.vy = 0;
+            self.spent = self.spent.saturating_add(1);
             false
         }
     }

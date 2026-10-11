@@ -51,7 +51,7 @@ fn flight_spends_more_than_hover(_gba: &mut agb::Gba) {
 #[test_case]
 fn convoy_has_not_reached_the_mark(_gba: &mut agb::Gba) {
     let mut floor = ground();
-    let mut world = World::preview(&mut floor, 3);
+    let mut world = World::preview(&mut floor, 4);
     let start = world.trucks[0].y;
     for _ in 0..300 {
         world.update_trucks();
@@ -81,7 +81,7 @@ fn house_briefing(gba: &mut agb::Gba) {
     gfx.set_background_palette_colour_256(0, Rgb::new(24, 64, 128).to_rgb15());
     hide_ground();
     let mut frame = gfx.frame();
-    draw_select(&mut frame, 2, 0, true, false, 0, Sensor::Day, None);
+    draw_select(&mut frame, 3, 0, true, false, 0, Sensor::Day, None);
     frame.commit();
     agb::test_runner::assert_image_output("tests/briefing_house.png");
 }

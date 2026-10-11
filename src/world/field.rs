@@ -12,13 +12,13 @@ impl super::World {
         let task = task_of(level);
         let mode = match task {
             Task::Fpv | Task::Nest | Task::Dart => Mode::Fpv,
-            Task::Gate => Mode::Gate,
             Task::Guide | Task::Column | Task::Rush | Task::Push | Task::Bend => Mode::Guide,
             _ => Mode::Quad,
         };
         let (tx, ty) = start_tile(level);
         let alt = match task {
-            Task::Gate => 12,
+            // Above the bar. The lesson is to come down into the opening.
+            Task::Gate => 20,
             Task::Fpv => 10,
             Task::Night | Task::Heat | Task::Armor | Task::Pill => 14,
             Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => 11,
@@ -113,6 +113,7 @@ impl super::World {
             guide: 0,
             salvo: 0,
             salvo_cd: 0,
+            lesson: 0,
             mark_x: 0,
             mark_y: 0,
             bloom: 0,
@@ -192,6 +193,11 @@ impl super::World {
 
     pub(crate) fn gate_y(&self) -> i32 {
         (6 * 8 + 4) << 8
+    }
+
+    /// South of the posts, on the way from the pad. Hover here, then drop.
+    pub(crate) fn drill_mark(&self) -> (i32, i32) {
+        ((18 * 8 + 4) << 8, (78 * 8 + 4) << 8)
     }
 
     pub(crate) fn seat_foes(&mut self) {
@@ -673,30 +679,28 @@ impl super::World {
                 }
             }
             Task::Pits => {
-                let men = [
-                    (16, 29),
-                    (18, 29),
-                    (24, 29),
-                    (28, 29),
-                    (12, 21),
-                    (16, 21),
-                    (26, 21),
-                    (32, 21),
-                ];
-                for (index, (tx, ty)) in men.into_iter().enumerate() {
-                    self.soldiers[index] = Soldier {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
-                        dir: 80,
-                        step: 0,
-                        home_tx: tx,
-                        home_ty: ty,
-                        officer: false,
-                        objective: true,
-                        hp: HP_MAN,
-                        cool: 40,
-                        alive: true,
-                    };
+                // Two trench lines. Each pair shares a tile, so one grenade
+                // covers it, and the sweep is four drops instead of a tour.
+                let pairs = [(22, 29), (25, 29), (22, 21), (25, 21)];
+                let offs = [(3, 4), (5, 4)];
+                let mut index = 0;
+                for (tx, ty) in pairs {
+                    for (ox, oy) in offs {
+                        self.soldiers[index] = Soldier {
+                            x: (tx * 8 + ox) << 8,
+                            y: (ty * 8 + oy) << 8,
+                            dir: 80,
+                            step: 0,
+                            home_tx: tx,
+                            home_ty: ty,
+                            officer: false,
+                            objective: true,
+                            hp: HP_MAN,
+                            cool: 40,
+                            alive: true,
+                        };
+                        index += 1;
+                    }
                 }
                 let wrecks = [
                     (14, 34, HUSK_TANK, false),
@@ -1073,7 +1077,9 @@ impl super::World {
         // Fetch is the caches and the three tanks. A trench rifle under the
         // hatch makes the sit impossible, and the tanks' own guns still
         // cover the way in.
-        if matches!(task_of(self.level), Task::Pits | Task::Fetch) || winter_card(self.level) {
+        if matches!(task_of(self.level), Task::Pits | Task::Fetch | Task::Gate)
+            || winter_card(self.level)
+        {
             return;
         }
         let seeded = terrain(self.level, tx, ty);

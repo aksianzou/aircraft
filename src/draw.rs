@@ -130,6 +130,16 @@ pub(crate) fn draw_select(
     if can_right {
         show_flip(frame, sprites::ARROW.sprite(0), 220 + nudge, 132, false, false);
     }
+    draw_controls(frame);
+}
+
+/// The stick. Short lines sit under the photograph; the long ones sit on the bottom.
+fn draw_controls(frame: &mut agb::display::GraphicsFrame) {
+    show_small_at(frame, b"CROSS AIM", 168, 104);
+    show_small_at(frame, b"A CYCLE", 168, 112);
+    show_small_at(frame, b"B DROP", 168, 120);
+    show_small(frame, b"SELECT HOVER", 144);
+    show_small(frame, b"START PAUSE", 152);
 }
 
 /// The still in the window. One photograph per card, reduced to colours the cartridge already has.
@@ -160,7 +170,7 @@ fn mission_brief(level: u8, sensor: Sensor) -> (&'static [u8], &'static [u8], &'
         Task::Convoy => (b"1 STOP THE TRUCK", b"2 THREE BOMBS"),
         Task::Night => (b"1 THREE TRUCKS", b"2 SIX BOMBS"),
         Task::Heat => (b"1 THREE HOT TRUCKS", b"2 SIX BOMBS"),
-        Task::Gate => (b"1 FLY THE HEIGHT GAP", b"2 NO WEAPONS"),
+        Task::Gate => (b"1 HOVER AND DROP", b"2 FLY THE GAP"),
         Task::Guide => (b"1 MARK THREE TRUCKS", b"2 ARTILLERY FIRES"),
         Task::Column => (b"1 LEAD THE COLUMN", b"2 ARTILLERY FIRES"),
         Task::Armor => (b"1 THREE TANKS", b"2 MINES AND BOMBS"),
@@ -196,7 +206,7 @@ fn mission_title(level: u8) -> (&'static [u8], &'static [u8]) {
         Task::Convoy => (b"KILL", b"TRUCK"),
         Task::Night => (b"NIGHT", b"SIGHT"),
         Task::Heat => (b"HEAT", b"SCAN"),
-        Task::Gate => (b"THE", b"GATE"),
+        Task::Gate => (b"FIRST", b"FLIGHT"),
         Task::Guide => (b"FIRE", b"MARK"),
         Task::Column => (b"COLUMN", b"MARK"),
         Task::Armor => (b"ARMOR", b"HUNT"),
@@ -1275,6 +1285,7 @@ pub(crate) fn show_truck(
     sy: i32,
     horizon: i32,
     alt: i32,
+    pitch: Num<i32, 8>,
     sin_r: i32,
     cos_r: i32,
     sensor: Sensor,
@@ -1287,20 +1298,28 @@ pub(crate) fn show_truck(
     } else {
         (truck.dir.signum(), 0)
     };
-    // The flight camera only uses the level front, side and rear. A three-quarter
-    // frame puts the cab up the screen and the truck looks reared. The plan
-    // sheet is the overhead picture, and only while the horizon is gone.
+    // Level flight keeps the flat front, side and rear. A three-quarter frame
+    // puts the cab up the screen and the truck looks reared. A dive uses the
+    // flatter row, the same way a man does. Looking straight down, the plan
+    // sheet is a roof and the near wall.
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
+    let pitched = pitch.sin().to_raw() >= 100;
     let (sprite, native_w, native_h, ink, foot) = if scale.plan {
-        // Diagonal frames run further into the 32 tile than the side ones.
-        let ink = if oct & 1 == 1 { 28 } else { 23 };
+        // The ink is the long axis of that frame, so turning does not resize it.
+        let ink = match oct & 7 {
+            0 => 12,
+            2 | 6 => 16,
+            4 => 15,
+            _ => 19,
+        };
         (sprites::TRUCK_TOP.sprite(oct), 32, 32, ink, 25)
-    } else if scale.near {
+    } else if scale.near && !pitched {
         (sprites::TRUCK_NEAR.sprite(four_view(oct)), 64, 32, 21, 29)
     } else {
-        (sprites::TRUCK.sprite(level_octant(oct)), 32, 32, 9, 25)
+        let index = level_octant(oct) + if pitched { 8 } else { 0 };
+        (sprites::TRUCK.sprite(index), 32, 32, 9, 25)
     };
     show_figure(
         frame, sprite, sx, sy, native_w, native_h, ink, foot, scale.span, scale.plan, sensor, wreck,
@@ -1315,6 +1334,7 @@ pub(crate) fn show_tank(
     sy: i32,
     horizon: i32,
     alt: i32,
+    pitch: Num<i32, 8>,
     sin_r: i32,
     cos_r: i32,
     sensor: Sensor,
@@ -1330,13 +1350,20 @@ pub(crate) fn show_tank(
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
+    let pitched = pitch.sin().to_raw() >= 100;
     let (sprite, native_w, native_h, ink, foot) = if scale.plan {
-        let ink = if oct & 1 == 1 { 32 } else { 27 };
+        let ink = match oct & 7 {
+            0 => 12,
+            4 => 14,
+            2 | 6 => 17,
+            _ => 18,
+        };
         (sprites::TANK_TOP.sprite(oct), 32, 32, ink, 25)
-    } else if scale.near {
+    } else if scale.near && !pitched {
         (sprites::TANK_NEAR.sprite(four_view(oct)), 64, 32, 21, 27)
     } else {
-        (sprites::TANK.sprite(level_octant(oct)), 32, 32, 8, 25)
+        let index = level_octant(oct) + if pitched { 8 } else { 0 };
+        (sprites::TANK.sprite(index), 32, 32, 8, 25)
     };
     show_figure(
         frame, sprite, sx, sy, native_w, native_h, ink, foot, scale.span, scale.plan, sensor, wreck,
@@ -1351,6 +1378,7 @@ pub(crate) fn show_bunker(
     sy: i32,
     horizon: i32,
     alt: i32,
+    pitch: Num<i32, 8>,
     cam_x: i32,
     cam_y: i32,
     sin_r: i32,
@@ -1370,12 +1398,19 @@ pub(crate) fn show_bunker(
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
+    let pitched = pitch.sin().to_raw() >= 100;
     let (sprite, native_w, native_h, ink, foot) = if scale.plan {
-        (sprites::BUNKER_TOP.sprite(oct), 32, 32, 24, 25)
-    } else if scale.near {
+        let ink = match oct & 7 {
+            2 | 6 => 12,
+            0 | 4 => 14,
+            _ => 18,
+        };
+        (sprites::BUNKER_TOP.sprite(oct), 32, 32, ink, 25)
+    } else if scale.near && !pitched {
         (sprites::BUNKER_NEAR.sprite(four_view(oct)), 64, 32, 22, 29)
     } else {
-        (sprites::BUNKER.sprite(oct), 32, 32, 8, 25)
+        let index = level_octant(oct) + if pitched { 8 } else { 0 };
+        (sprites::BUNKER.sprite(index), 32, 32, 8, 25)
     };
     show_figure(
         frame, sprite, sx, sy, native_w, native_h, ink, foot, scale.span, scale.plan, sensor, wreck,
@@ -1916,6 +1951,34 @@ fn draw_lase(
     let smoking = world.booms.iter().any(|boom| boom.alive);
     if !smoking && (world.age / 3) % 2 == 0 {
         show(frame, sprites::SPARK.sprite(0), sx - 4, sy - 4);
+    }
+    let gap = 6;
+    let mark = sprites::BRACKET.sprite(0);
+    show_flip(frame, mark, sx - gap - 8, sy - gap - 8, false, false);
+    show_flip(frame, mark, sx + gap, sy - gap - 8, true, false);
+    show_flip(frame, mark, sx - gap - 8, sy + gap, false, true);
+    show_flip(frame, mark, sx + gap, sy + gap, true, true);
+}
+
+/// The practice mark on the first card, until the bomb leaves the rail.
+fn draw_drill(
+    frame: &mut agb::display::GraphicsFrame,
+    world: &World,
+    sin_r: i32,
+    cos_r: i32,
+    horizon: i32,
+    cockpit: bool,
+) {
+    if !matches!(task_of(world.level), Task::Gate) || world.lesson >= 2 || world.falling {
+        return;
+    }
+    let (x, y) = world.drill_mark();
+    let Some((sx, sy)) = project(world.x, world.y, world.alt, sin_r, cos_r, horizon, x, y, 0)
+    else {
+        return;
+    };
+    if !in_view(sx, sy, cockpit) {
+        return;
     }
     let gap = 6;
     let mark = sprites::BRACKET.sprite(0);
@@ -2820,7 +2883,11 @@ pub(crate) fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
             })
             .unwrap_or(0),
         Task::Gate => {
-            pts[0] = (world.gate_x(), world.gate_y());
+            pts[0] = if world.lesson < 2 {
+                world.drill_mark()
+            } else {
+                (world.gate_x(), world.gate_y())
+            };
             1
         }
         Task::Hq => {
@@ -2967,6 +3034,14 @@ pub(crate) fn draw_hud(frame: &mut agb::display::GraphicsFrame, world: &World, b
         show(frame, sprites::LBL_DRONE.sprite(0), 160, 0);
         draw_readout(frame, world.drones, 1, 176, 0, blind);
     }
+    if matches!(task_of(world.level), Task::Gate) && world.targets > 0 {
+        let line: &[u8] = match world.lesson {
+            0 => b"SELECT OVER MARK",
+            1 => b"B DROP THE BOMB",
+            _ => b"FLY THE GAP",
+        };
+        show_small(frame, line, 148);
+    }
     // How many mission marks are still left.
     show(frame, sprites::DOT.sprite(0), WIDTH - 28, 72);
     draw_readout(frame, world.targets, 2, WIDTH - 28, 80, blind);
@@ -2985,6 +3060,7 @@ pub(crate) fn draw_world(
     let floor = sky_bottom(horizon, world.alt);
     let ground_y = ground_line(horizon, world.alt, cockpit);
     draw_lase(frame, world, sin_r, cos_r, horizon, cockpit);
+    draw_drill(frame, world, sin_r, cos_r, horizon, cockpit);
     for boom in &world.booms {
         if !boom.alive {
             continue;
@@ -3233,6 +3309,7 @@ pub(crate) fn draw_world(
             sy,
             horizon,
             world.alt,
+            world.pitch,
             sin_r,
             cos_r,
             sensor,
@@ -3263,6 +3340,7 @@ pub(crate) fn draw_world(
             sy,
             horizon,
             world.alt,
+            world.pitch,
             sin_r,
             cos_r,
             sensor,
@@ -3293,6 +3371,7 @@ pub(crate) fn draw_world(
             sy,
             horizon,
             world.alt,
+            world.pitch,
             world.x,
             world.y,
             sin_r,
@@ -3352,7 +3431,18 @@ fn draw_husks(
                     alive: true,
                 };
                 show_tank(
-                    frame, &tank, sx, sy, horizon, world.alt, sin_r, cos_r, sensor, world.yaw, true,
+                    frame,
+                    &tank,
+                    sx,
+                    sy,
+                    horizon,
+                    world.alt,
+                    world.pitch,
+                    sin_r,
+                    cos_r,
+                    sensor,
+                    world.yaw,
+                    true,
                 );
             }
             HUSK_BUNKER => {
@@ -3373,6 +3463,7 @@ fn draw_husks(
                     sy,
                     horizon,
                     world.alt,
+                    world.pitch,
                     world.x,
                     world.y,
                     sin_r,
@@ -3432,6 +3523,7 @@ fn draw_husks(
                     sy,
                     horizon,
                     world.alt,
+                    world.pitch,
                     sin_r,
                     cos_r,
                     sensor,
@@ -4067,6 +4159,7 @@ pub(crate) fn draw_aa_guns(
             sy,
             horizon,
             world.alt,
+            world.pitch,
             world.x,
             world.y,
             sin_r,
