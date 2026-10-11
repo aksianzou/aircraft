@@ -5,13 +5,14 @@ use crate::draw::{isqrt64, project};
 impl super::World {
     pub(crate) fn try_shot(&mut self, kind: u8) -> bool {
         // One release. The round leaves the airframe with the airframe's
-        // speed. The glass does not move the spawn.
+        // speed. Height walks the spawn off the nose. The gun does not.
         let Some(slot) = self.shots.iter_mut().find(|shot| !shot.alive) else {
             return false;
         };
+        let (jx, jy) = release_error(self.alt, self.x, self.y, self.age, kind);
         *slot = Shot {
-            x: self.x,
-            y: self.y,
+            x: wrap_coord(self.x + jx),
+            y: wrap_coord(self.y + jy),
             z: self.alt,
             vx: self.vx,
             vy: self.vy,
@@ -503,7 +504,7 @@ impl super::World {
             // A wing keeps its cruise. It does not park on the truck or the player.
             if foe.wing {
                 let speed = if defend {
-                    40
+                    18
                 } else if cover {
                     80
                 } else {
@@ -535,10 +536,12 @@ impl super::World {
                 let (tx, ty) = if defend {
                     (base_x, base_y)
                 } else if let Some((ex, ey)) = escort {
-                    let side = if foe.home_x < ex { -(24 << 8) } else { 24 << 8 };
+                    let side = if foe.home_x < ex { -(40 << 8) } else { 40 << 8 };
                     (ex.wrapping_add(side), ey.wrapping_sub(20 << 8))
-                } else if see {
+                } else if see && !cover {
                     (px, py)
+                } else if cover {
+                    (foe.x, foe.y)
                 } else {
                     (foe.home_x, foe.home_y)
                 };
@@ -546,7 +549,7 @@ impl super::World {
                 let dy = ty.wrapping_sub(foe.y) as i64;
                 let dist = isqrt64(dx * dx + dy * dy);
                 let step = if defend {
-                    56
+                    22
                 } else if cover {
                     40
                 } else {
@@ -591,7 +594,9 @@ impl super::World {
         let hy = self.soldiers[index].home_ty;
         let officer = self.soldiers[index].officer;
         let objective = self.soldiers[index].objective;
+        let dir = self.soldiers[index].dir;
         self.soldiers[index].alive = false;
+        self.leave_husk(x, y, dir, false, HUSK_MAN);
         self.mark_quiet(hx, hy);
         self.note_kill(
             bg,
@@ -794,29 +799,45 @@ impl super::World {
     }
 
     pub(crate) fn update_trucks(&mut self) {
+        let guide = self.mode == Mode::Guide;
         for index in 0..MAX_TRUCKS {
             if !self.trucks[index].alive {
                 continue;
             }
+            // The push walks with its infantry. A faster truck would leave the
+            // two men the mark is meant to cover.
             if self.trucks[index].objective && matches!(task_of(self.level), Task::Push) {
                 self.trucks[index].y -= rush_step(self.level);
                 continue;
             }
-            // Faster than a road crawl, slow enough to climb, shoot, then dive.
-            if self.trucks[index].goal && matches!(task_of(self.level), Task::Cover) {
-                self.trucks[index].y -= 24;
+            let dir = self.trucks[index].dir;
+            let step = drive_step(guide, dir);
+            if step == 0 {
                 continue;
             }
-            let step = ground_step(self.trucks[index].dir);
             if self.trucks[index].vertical {
                 self.trucks[index].y += step;
             } else {
                 self.trucks[index].x += step;
             }
+            // A goal truck has a long run north. It does not turn around.
             if self.trucks[index].goal {
                 continue;
             }
-            self.keep_on_road(index, true, step);
+            let home = if self.trucks[index].vertical {
+                self.trucks[index].home_ty * 8 + 4
+            } else {
+                self.trucks[index].home_tx * 8 + 4
+            };
+            let here = if self.trucks[index].vertical {
+                self.trucks[index].y >> 8
+            } else {
+                self.trucks[index].x >> 8
+            };
+            // Six tiles either side of where it started, so the lead stays in view.
+            if (here - home).abs() > 48 {
+                self.trucks[index].dir = -self.trucks[index].dir;
+            }
         }
     }
 
@@ -841,6 +862,12 @@ impl super::World {
                 continue;
             }
             if self.soldiers[index].objective && matches!(task_of(self.level), Task::Fpv | Task::Nest)
+            {
+                continue;
+            }
+            // A pair has to stay inside one grenade. The patrol walk splits them.
+            if self.soldiers[index].objective
+                && matches!(task_of(self.level), Task::Grove | Task::Thaw)
             {
                 continue;
             }
@@ -893,11 +920,14 @@ impl super::World {
     }
 
     pub(crate) fn explode(&mut self, bg: &mut AffineBackground, x: i32, y: i32, radius: i32, depth: i32, kind: u8) {
-        self.add_boom(x, y, 0, radius);
-        self.damage_tiles(bg, x, y, radius);
+        // A grenade is fragments, not a fireball. The picture stays a spark.
+        let picture = if kind == KIND_VOG { 4 } else { radius };
+        self.add_boom(x, y, 0, picture);
+        if kind != KIND_VOG {
+            self.damage_tiles(bg, x, y, radius);
+        }
         let reach = radius * radius;
-        // Inside half the radius the body is gone. Outside that, and still
-        // inside the kill, it burns in place.
+        // A bunker still stands unless the blast is outside the inner tear.
         let torn = reach / 4;
         let mut ash_x = [0i32; 18];
         let mut ash_y = [0i32; 18];
@@ -959,7 +989,9 @@ impl super::World {
                 } else {
                     men_hit += 1;
                 }
-                if dist > torn && ash_n < ash_x.len() {
+                // A bomb or a shell takes the man apart. A grenade's fragments
+                // drop him where he stood.
+                if kind == KIND_VOG && ash_n < ash_x.len() {
                     ash_x[ash_n] = soldier.x;
                     ash_y[ash_n] = soldier.y;
                     ash_dir[ash_n] = soldier.dir;
@@ -1201,7 +1233,7 @@ impl super::World {
 
     /// The convoy truck reached the mark. The sortie is lost.
     pub(crate) fn check_convoy(&mut self) {
-        if !matches!(task_of(self.level), Task::Convoy) || self.targets <= 0 {
+        if !matches!(task_of(self.level), Task::Convoy | Task::Drift) || self.targets <= 0 {
             return;
         }
         let arrived = self.trucks.iter().any(|truck| {
@@ -1220,7 +1252,7 @@ impl super::World {
         let arrived = self
             .trucks
             .iter()
-            .any(|truck| truck.alive && truck.goal && tile_of(truck.y) <= 14);
+            .any(|truck| truck.alive && truck.goal && tile_of(truck.y) <= 6);
         if arrived {
             self.fail(Why::Truck);
         }
@@ -1389,6 +1421,27 @@ impl super::World {
             alive: true,
         };
     }
+}
+
+/// Extra pixels of miss as the drop starts higher. The gun never calls this.
+/// Below about ten metres the round still leaves the nose. A high drop can
+/// walk ten pixels off it, which is inside a hull and outside a hatch.
+fn release_error(alt: i32, x: i32, y: i32, age: i32, kind: u8) -> (i32, i32) {
+    let each = match kind {
+        KIND_BOMB | KIND_MINE => (alt >> 8) / 5,
+        KIND_HE => (alt >> 8) / 4,
+        KIND_VOG => (alt >> 8) / 8,
+        _ => 0,
+    };
+    let each = each.clamp(0, 10);
+    if each <= 1 {
+        return (0, 0);
+    }
+    let n = hash((x >> 8).wrapping_add(age), y >> 8);
+    let span = each as u32 * 2 + 1;
+    let jx = (n % span) as i32 - each;
+    let jy = ((n >> 10) % span) as i32 - each;
+    (jx << 8, jy << 8)
 }
 
 /// True when `point` comes within `radius` pixels of the segment.

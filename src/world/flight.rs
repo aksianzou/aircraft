@@ -160,8 +160,9 @@ impl super::World {
         fetch_fly: bool,
         turning: bool,
     ) {
-        let slide_pitch = if turning { Tri::Zero } else { pitch_in };
-        let slide_yaw = if turning { Tri::Zero } else { yaw_in };
+        let defend_sit = defend_card(self.level) && self.hover;
+        let slide_pitch = if turning || defend_sit { Tri::Zero } else { pitch_in };
+        let slide_yaw = if turning || defend_sit { Tri::Zero } else { yaw_in };
         let creep = if fetch_fly {
             self.quad_creep(slide_pitch, slide_yaw)
         } else {
@@ -259,7 +260,8 @@ impl super::World {
         // About a second from level to a steep dive. Releasing the stick does
         // not snap the nose back. Hover keeps the nose so leaving it is the same attitude.
         let fetch_fly = fetch && !self.falling && loss < 16;
-        if !self.hover && !fetch_fly {
+        let defend_sit = defend_card(self.level) && self.hover;
+        if (!self.hover && !fetch_fly) || defend_sit {
             self.pitch += Num::new(tri_value(pitch_in)) / Num::new(240);
         }
         if self.falling {
@@ -271,9 +273,9 @@ impl super::World {
         if self.pitch < num!(-0.12) {
             self.pitch = num!(-0.12);
         }
-        // Overhead slides. The forward glass of the mine quad yaws like the others.
+        // On the pad the gun turns and nods without sliding off it.
         let turning = fetch_fly && !self.hover;
-        let yaw_step = if (self.hover || fetch_fly) && !turning {
+        let yaw_step = if (self.hover || fetch_fly) && !turning && !defend_sit {
             Num::new(0)
         } else {
             Num::new(tri_value(yaw_in)) / Num::new(160)
@@ -309,33 +311,53 @@ impl super::World {
         }
 
         // Contact is the airframe itself, a few pixels out, so you can fly
-        // up to a soldier before the charge goes.
+        // up to a soldier before the charge goes. A pine is solid up to its crown.
         let touching = self.alt <= 4 << 8 && self.point_blank();
+        let crowned = self.in_crown();
         // A live Fetch quad sits on a round. A dead battery still hits the ground.
         let dug_in = self.alt <= 0 && !(fetch && !self.falling && loss < 16);
-        if touching || dug_in {
+        if touching || dug_in || crowned {
             if dug_in {
                 self.alt = 0;
-            }
-            if self.mode == Mode::Fpv {
-                self.explode(bg, self.x, self.y, 48, 0, KIND_BOMB);
-            } else if touching {
-                let _ = self.strike_at(bg, self.x, self.y);
-            } else {
-                self.add_boom(self.x, self.y, 0, 0);
             }
             self.falling = false;
             self.vx = 0;
             self.vy = 0;
-            // An empty battery ends the sortie. A crash from the radio still returns to the pad.
-            if self.battery == 0 {
-                self.fail(Why::Cell);
+            if self.mode == Mode::Fpv {
+                self.explode(bg, self.x, self.y, 48, 0, KIND_BOMB);
+                // The next airframe leaves the pad, until the last one is spent.
+                if self.battery == 0 {
+                    self.fail(Why::Cell);
+                } else {
+                    self.recover = 22;
+                }
+                return true;
+            }
+            if touching {
+                let _ = self.strike_at(bg, self.x, self.y);
             } else {
-                self.recover = 22;
+                self.add_boom(self.x, self.y, 0, 0);
+            }
+            // One airframe. The ram is a win only when that kill clears the card.
+            if self.targets > 0 {
+                if self.battery == 0 {
+                    self.fail(Why::Cell);
+                } else {
+                    self.fail(Why::Hull);
+                }
             }
             return true;
         }
         true
+    }
+
+    /// True when the airframe is down in a pine. Cruise height clears the crown.
+    fn in_crown(&self) -> bool {
+        let alt = self.alt >> 8;
+        if alt <= 0 || alt > TREE_TOP {
+            return false;
+        }
+        self.ground_at(tile_of(self.x), tile_of(self.y)) == T_TREE
     }
 
     /// True when the airframe is on top of a soldier or a truck.
@@ -494,7 +516,15 @@ impl super::World {
     }
 
     pub(crate) fn wear(&mut self) {
-        let span = 64 - heat(self.level);
+        // Forward flight spends the pack. A hover, and the mine quad sitting
+        // on a pad, spend less. The span is taken from this card's clock, so a
+        // full sortie in the air still finishes with the battery star in reach.
+        let flight_span = (time_budget(self.level) / 65).max(16);
+        let span = if self.hover {
+            flight_span * 3 / 2
+        } else {
+            flight_span
+        };
         if self.on_charger() {
             if self.battery < 100 && self.age % 3 == 0 {
                 self.battery += 1;

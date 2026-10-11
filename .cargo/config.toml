@@ -1,6 +1,9 @@
 [unstable]
 build-std = ["core", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
+# The GBA profile aborts on panic. `cargo test` otherwise rebuilds core for
+# unwinding and links that core beside the abort one.
+panic-abort-tests = true
 
 [build]
 target = "thumbv4t-none-eabi"
