@@ -164,7 +164,14 @@ impl super::World {
                 } else {
                     ((hash(self.age, n + 5) % 33) as i32 - 16) << 8
                 };
-                self.explode(bg, self.mark_x + jitter_x, self.mark_y + jitter_y, 22, 0, KIND_BOMB);
+                self.explode(
+                    bg,
+                    self.mark_x + jitter_x,
+                    self.mark_y + jitter_y,
+                    22,
+                    0,
+                    KIND_BOMB,
+                );
                 self.salvo -= 1;
                 self.salvo_cd = 8;
             }
@@ -184,8 +191,16 @@ impl super::World {
         turning: bool,
     ) {
         let defend_sit = defend_card(self.level) && self.hover;
-        let slide_pitch = if turning || defend_sit { Tri::Zero } else { pitch_in };
-        let slide_yaw = if turning || defend_sit { Tri::Zero } else { yaw_in };
+        let slide_pitch = if turning || defend_sit {
+            Tri::Zero
+        } else {
+            pitch_in
+        };
+        let slide_yaw = if turning || defend_sit {
+            Tri::Zero
+        } else {
+            yaw_in
+        };
         let creep = if fetch_fly {
             self.quad_creep(slide_pitch, slide_yaw)
         } else {
@@ -195,8 +210,8 @@ impl super::World {
         let strafe = tri_value(slide_yaw) * creep;
         self.vx = (sin_r * along + cos_r * strafe) >> 8;
         self.vy = ((-cos_r) * along + sin_r * strafe) >> 8;
-        self.x = wrap_coord(self.x + self.vx);
-        self.y = wrap_coord(self.y + self.vy);
+        self.x += self.vx;
+        self.y += self.vy;
         if !turning {
             self.bank += (Num::new(0) - self.bank) / Num::new(6);
         }
@@ -213,8 +228,8 @@ impl super::World {
     pub(crate) fn drop_motion(&mut self) {
         self.vx = (self.vx * 3) / 4;
         self.vy = (self.vy * 3) / 4;
-        self.x = wrap_coord(self.x + self.vx);
-        self.y = wrap_coord(self.y + self.vy);
+        self.x += self.vx;
+        self.y += self.vy;
         self.alt -= 96;
         if self.alt < 0 {
             self.alt = 0;
@@ -241,8 +256,8 @@ impl super::World {
         };
         self.vx = (sin_r * horiz) >> 8;
         self.vy = -((cos_r * horiz) >> 8);
-        self.x = wrap_coord(self.x + self.vx);
-        self.y = wrap_coord(self.y + self.vy);
+        self.x += self.vx;
+        self.y += self.vy;
         // 110 subpixels per frame at a vertical nose. Shallower angles sink less.
         // The spotter's stick tilts the camera and does not climb or dive.
         if self.mode != Mode::Guide || self.falling {
@@ -253,13 +268,16 @@ impl super::World {
     /// Always flies forward. The stick tilts the nose; height and speed follow
     /// that angle, and the nose stays where you leave it.
     /// Kamikaze spends one drone and returns to the pad instead of ending the mission.
-    pub(crate) fn fly_plane(&mut self, input: &ButtonController, bg: &mut AffineBackground) -> bool {
+    pub(crate) fn fly_plane(
+        &mut self,
+        input: &ButtonController,
+        bg: &mut AffineBackground,
+    ) -> bool {
         self.age = self.age.wrapping_add(1);
         // Past the radio the stick drops frames, then drops out.
         let loss = self.signal_loss();
         // The stick only flutters in the last part of the radio, and dies at the edge.
-        let mute = loss >= 16
-            || (loss >= 13 && (hash(self.age, 3) % 16) < (loss as u32 - 12));
+        let mute = loss >= 16 || (loss >= 13 && (hash(self.age, 3) % 16) < (loss as u32 - 12));
         let pitch_in = if mute || self.falling {
             Tri::Zero
         } else {
@@ -386,11 +404,13 @@ impl super::World {
     /// True when the airframe is on top of a soldier or a truck.
     pub(crate) fn point_blank(&self) -> bool {
         let reach = 14 * 14;
-        self.soldiers.iter().any(|soldier| {
-            soldier.alive && dist2_px(self.x, self.y, soldier.x, soldier.y) <= reach
-        }) || self.trucks.iter().any(|truck| {
-            truck.alive && dist2_px(self.x, self.y, truck.x, truck.y) <= reach
-        })
+        self.soldiers
+            .iter()
+            .any(|soldier| soldier.alive && dist2_px(self.x, self.y, soldier.x, soldier.y) <= reach)
+            || self
+                .trucks
+                .iter()
+                .any(|truck| truck.alive && dist2_px(self.x, self.y, truck.x, truck.y) <= reach)
     }
 
     /// Whoever stands on the nose point is the kamikaze target.
@@ -423,10 +443,11 @@ impl super::World {
                 x,
                 y,
                 if officer { 200 } else { 50 },
-                officer,
-                false,
-                false,
-                objective,
+                Kill {
+                    officer,
+                    objective,
+                    ..Kill::default()
+                },
             );
             return true;
         }
@@ -453,10 +474,12 @@ impl super::World {
                 x,
                 y,
                 if goal { 200 } else { 100 },
-                false,
-                !goal,
-                goal,
-                objective,
+                Kill {
+                    truck: !goal,
+                    goal,
+                    objective,
+                    ..Kill::default()
+                },
             );
             return true;
         }
@@ -469,14 +492,11 @@ impl super::World {
         x: i32,
         y: i32,
         points: i32,
-        officer: bool,
-        truck: bool,
-        goal: bool,
-        objective: bool,
+        kill: Kill,
     ) {
         self.add_boom(x, y, 0, 0);
         self.score += points;
-        self.claim(officer, truck, goal, objective);
+        self.claim(kill);
         let tx = tile_of(x);
         let ty = tile_of(y);
         if self.ground_at(tx, ty) != T_WATER {

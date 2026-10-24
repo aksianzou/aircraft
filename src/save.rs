@@ -1,4 +1,4 @@
-use crate::world::{Sensor, LEVEL_COUNT, sensor_of};
+use crate::world::{LEVEL_COUNT, Sensor, sensor_of};
 
 pub(crate) static SAVE_KIND: [u8; 12] = *b"SRAM_V113\0\0\0";
 
@@ -43,29 +43,21 @@ pub(crate) fn load_progress() -> Progress {
     }
     let mut unlocked = raw[4].min(LEVEL_COUNT - 1);
     // Slots opened when those cards were added. The bit is the slot, not the task.
-    if cleared & (1 << 7) != 0 {
-        unlocked = unlocked.max(8).min(LEVEL_COUNT - 1);
-    }
-    if cleared & (1 << 8) != 0 {
-        unlocked = unlocked.max(9).min(LEVEL_COUNT - 1);
-    }
-    if cleared & (1 << 11) != 0 {
-        unlocked = unlocked.max(12).min(LEVEL_COUNT - 1);
-    }
-    if cleared & (1 << 21) != 0 {
-        unlocked = unlocked.max(22).min(LEVEL_COUNT - 1);
-    }
-    // A finished crows card already earned the escort sortie added after it.
-    if cleared & (1 << 23) != 0 {
-        unlocked = unlocked.max(24).min(LEVEL_COUNT - 1);
-    }
-    // A finished escort already earned the ash pits added after it.
-    if cleared & (1 << 24) != 0 {
-        unlocked = unlocked.max(25).min(LEVEL_COUNT - 1);
-    }
-    // A finished ash pits already earned the first snow card added after it.
-    if cleared & (1 << 25) != 0 {
-        unlocked = unlocked.max(26).min(LEVEL_COUNT - 1);
+    // A finished crows card already earned the escort sortie added after it,
+    // the escort the ash pits, and the ash pits the first snow card.
+    const OPENED: [(u8, u8); 7] = [
+        (7, 8),
+        (8, 9),
+        (11, 12),
+        (21, 22),
+        (23, 24),
+        (24, 25),
+        (25, 26),
+    ];
+    for (done, opens) in OPENED {
+        if cleared & (1 << done) != 0 {
+            unlocked = unlocked.clamp(opens, LEVEL_COUNT - 1);
+        }
     }
     let mut marks = [0u8; 12];
     if raw[24] == fold(&raw[14..24], 0x6B) {
@@ -122,7 +114,9 @@ fn saw(progress: &Progress, kind: Sensor) -> bool {
 fn sensor_kind(level: u8, kind: Sensor) -> bool {
     matches!(
         (sensor_of(level), kind),
-        (Sensor::Night, Sensor::Night) | (Sensor::Heat, Sensor::Heat) | (Sensor::Day, Sensor::Day)
+        (Sensor::Night, Sensor::Night)
+            | (Sensor::Heat, Sensor::Heat)
+            | (Sensor::Day, Sensor::Day)
             | (Sensor::Ir, Sensor::Ir)
     )
 }
@@ -193,9 +187,7 @@ pub(crate) fn store_progress(progress: &Progress) {
     bytes[37] = progress.glass[7] ^ 0xA7;
     for (index, byte) in bytes.into_iter().enumerate() {
         unsafe {
-            (0x0E00_0000 as *mut u8)
-                .add(index)
-                .write_volatile(byte);
+            (0x0E00_0000 as *mut u8).add(index).write_volatile(byte);
         }
     }
 }

@@ -100,6 +100,16 @@ pub(crate) const TANK_NEAR: i32 = 28;
 /// Bombs beside the hull that finish a tank. The hatch is still one shot.
 pub(crate) const BOMB_HULL_HITS: i8 = 3;
 
+/// What a kill counts as on the card: the officer, a truck, the truck the
+/// card is about, and one of the marked targets.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Kill {
+    pub(crate) officer: bool,
+    pub(crate) truck: bool,
+    pub(crate) goal: bool,
+    pub(crate) objective: bool,
+}
+
 /// How many blasts beside the hull finish a full tank. Zero leaves the hull alone.
 pub(crate) fn hull_hits(kind: u8) -> i8 {
     match kind {
@@ -302,8 +312,18 @@ pub(crate) fn time_budget(level: u8) -> i32 {
     let frames = match task_of(level) {
         Task::Officer | Task::Gate => 1800,
         Task::Trench | Task::Convoy | Task::Night | Task::Nest | Task::Dart => 2700,
-        Task::Hq | Task::Heat | Task::Guide | Task::Fpv | Task::Lane | Task::Flare
-        | Task::Bend | Task::Column | Task::Armor | Task::Pill | Task::Rush | Task::Skirt => 3600,
+        Task::Hq
+        | Task::Heat
+        | Task::Guide
+        | Task::Fpv
+        | Task::Lane
+        | Task::Flare
+        | Task::Bend
+        | Task::Column
+        | Task::Armor
+        | Task::Pill
+        | Task::Rush
+        | Task::Skirt => 3600,
         Task::Push | Task::Swarm => 4200,
         Task::Fetch => 4800,
         Task::Cover | Task::Pits | Task::Drift => 4500,
@@ -334,15 +354,28 @@ pub(crate) fn rack(task: Task) -> (i32, i32, i32, i32) {
         Task::Hearth => (2, 0, 0, 6),
         // Two bombs: the lesson, and one miss that still clears.
         Task::Gate => (2, 0, 0, 0),
-        Task::Fpv | Task::Guide | Task::Column | Task::Rush | Task::Push | Task::Nest
-        | Task::Dart | Task::Bend | Task::Fetch | Task::Swarm => (0, 0, 0, 0),
+        Task::Fpv
+        | Task::Guide
+        | Task::Column
+        | Task::Rush
+        | Task::Push
+        | Task::Nest
+        | Task::Dart
+        | Task::Bend
+        | Task::Fetch
+        | Task::Swarm => (0, 0, 0, 0),
     }
 }
 
 /// The round in hand when the card starts.
 pub(crate) fn opening_arm(task: Task) -> u8 {
     match task {
-        Task::Fpv | Task::Nest | Task::Dart | Task::Swarm | Task::Cover | Task::Grove
+        Task::Fpv
+        | Task::Nest
+        | Task::Dart
+        | Task::Swarm
+        | Task::Cover
+        | Task::Grove
         | Task::Hearth => ARM_GUN,
         Task::Fetch | Task::Armor | Task::Flare | Task::Thaw => ARM_MINE,
         Task::Pill | Task::Skirt | Task::Hq => ARM_HE,
@@ -373,9 +406,21 @@ fn spare_clear(world: &World) -> bool {
         Task::Swarm => return world.hull >= 50,
         Task::Officer | Task::Convoy | Task::Cover => 2,
         Task::Hearth => 4,
-        Task::Guide | Task::Column | Task::Rush | Task::Bend | Task::Fetch | Task::Night
-        | Task::Heat | Task::Lane | Task::Push => 4,
-        Task::Drift | Task::Trench | Task::Pill | Task::Skirt | Task::Armor | Task::Flare
+        Task::Guide
+        | Task::Column
+        | Task::Rush
+        | Task::Bend
+        | Task::Fetch
+        | Task::Night
+        | Task::Heat
+        | Task::Lane
+        | Task::Push => 4,
+        Task::Drift
+        | Task::Trench
+        | Task::Pill
+        | Task::Skirt
+        | Task::Armor
+        | Task::Flare
         | Task::Grove => 6,
         Task::Thaw | Task::Pits | Task::Hq => 8,
     };
@@ -534,6 +579,47 @@ pub(crate) struct Foe {
     pub(crate) alive: bool,
 }
 
+/// What the spawner and the reaper ask of a unit on the ground. The four
+/// kinds keep their own fields; this is the part they share.
+pub(crate) trait Unit {
+    fn alive(&self) -> bool;
+    /// The tile it was seated on.
+    fn home(&self) -> (i32, i32);
+    /// Where it is now, in sub-pixels.
+    fn at(&self) -> (i32, i32);
+    /// The card needs it, so it stays however far the aircraft goes.
+    fn kept(&self) -> bool;
+    fn retire(&mut self);
+}
+
+macro_rules! unit {
+    ($kind:ty, |$it:ident| $kept:expr) => {
+        impl Unit for $kind {
+            fn alive(&self) -> bool {
+                self.alive
+            }
+            fn home(&self) -> (i32, i32) {
+                (self.home_tx, self.home_ty)
+            }
+            fn at(&self) -> (i32, i32) {
+                (self.x, self.y)
+            }
+            fn kept(&self) -> bool {
+                let $it = self;
+                $kept
+            }
+            fn retire(&mut self) {
+                self.alive = false;
+            }
+        }
+    };
+}
+
+unit!(Soldier, |man| man.officer || man.objective);
+unit!(Truck, |truck| truck.goal || truck.objective);
+unit!(Tank, |tank| tank.objective);
+unit!(Bunker, |bunker| bunker.objective);
+
 #[derive(Clone, Copy)]
 pub(crate) struct Mark {
     pub(crate) tx: i32,
@@ -625,12 +711,6 @@ pub(crate) struct World {
     pub(crate) scrap: [Scrap; MAX_SCRAP],
 }
 
-/// mGBA keeps SRAM only when the ROM contains this tag.
-
-pub(crate) fn wrap_coord(value: i32) -> i32 {
-    value
-}
-
 pub(crate) fn wrap_yaw(yaw: &mut Num<i32, 8>) {
     if *yaw >= num!(1) {
         *yaw -= num!(1);
@@ -646,6 +726,11 @@ pub(crate) fn delta(a: i32, b: i32) -> i32 {
 
 pub(crate) fn tile_of(sub: i32) -> i32 {
     (sub >> 8).div_euclid(8)
+}
+
+/// The middle of a tile, in sub-pixels. The way back from `tile_of`.
+pub(crate) const fn tile_mid(tile: i32) -> i32 {
+    (tile * 8 + 4) << 8
 }
 
 pub(crate) fn tri_value(tri: Tri) -> i32 {
@@ -712,26 +797,48 @@ pub(crate) const HEARTH_WATCH: [AaGun; 1] = [AaGun {
 
 /// Three gates. The open side shifts right, then back left.
 pub(crate) const LANE_GUNS: [AaGun; 6] = [
-    AaGun { tx: -4, ty: 78, radius: 104 },
-    AaGun { tx: 48, ty: 78, radius: 104 },
-    AaGun { tx: 6, ty: 56, radius: 120 },
-    AaGun { tx: 54, ty: 56, radius: 104 },
-    AaGun { tx: -6, ty: 34, radius: 104 },
-    AaGun { tx: 42, ty: 34, radius: 104 },
+    AaGun {
+        tx: -4,
+        ty: 78,
+        radius: 104,
+    },
+    AaGun {
+        tx: 48,
+        ty: 78,
+        radius: 104,
+    },
+    AaGun {
+        tx: 6,
+        ty: 56,
+        radius: 120,
+    },
+    AaGun {
+        tx: 54,
+        ty: 56,
+        radius: 104,
+    },
+    AaGun {
+        tx: -6,
+        ty: 34,
+        radius: 104,
+    },
+    AaGun {
+        tx: 42,
+        ty: 34,
+        radius: 104,
+    },
 ];
 
 pub(crate) fn aa_guns(task: Task) -> &'static [AaGun] {
     match task {
-        Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => {
-            &LANE_GUNS
-        }
+        Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => &LANE_GUNS,
         Task::Hearth => &HEARTH_WATCH,
         _ => &[],
     }
 }
 
 pub(crate) fn gun_at(gun: &AaGun) -> (i32, i32) {
-    ((gun.tx * 8 + 4) << 8, (gun.ty * 8 + 4) << 8)
+    (tile_mid(gun.tx), tile_mid(gun.ty))
 }
 
 /// The drone is in sight under `AA_HIDE`. At that height every gun loses it.
@@ -747,7 +854,14 @@ pub(crate) fn aa_covers(guns: &[AaGun], x: i32, y: i32) -> bool {
 }
 
 /// Radar dial point back into the world. Ahead on the dial is negative `ry`.
-pub(crate) fn lane_world(cam_x: i32, cam_y: i32, sin_r: i32, cos_r: i32, rx: i32, ry: i32) -> (i32, i32) {
+pub(crate) fn lane_world(
+    cam_x: i32,
+    cam_y: i32,
+    sin_r: i32,
+    cos_r: i32,
+    rx: i32,
+    ry: i32,
+) -> (i32, i32) {
     let fwd = -ry * RADAR_RANGE / 12;
     let right = rx * RADAR_RANGE / 12;
     let dx = (fwd * sin_r + right * cos_r) >> 8;
@@ -785,7 +899,7 @@ fn pits_tile(level: u8, tx: i32, ty: i32, tile: u8) -> u8 {
         return T_TRENCH;
     }
     // Past the trenches the field is winter: white snow, a few burned trunks.
-    if tx < 6 || tx > 44 || ty < 12 || ty > 40 {
+    if !(6..=44).contains(&tx) || !(12..=40).contains(&ty) {
         return snow_field(tx, ty, tile);
     }
     match tile {
@@ -794,19 +908,19 @@ fn pits_tile(level: u8, tx: i32, ty: i32, tile: u8) -> u8 {
             // Another copse of burned trunks, standing together.
             let wx = tx.div_euclid(3);
             let wy = ty.div_euclid(3);
-            if hash(wx, wy.wrapping_add(53)) % 3 == 0 {
+            if hash(wx, wy.wrapping_add(53)).is_multiple_of(3) {
                 return T_STUMP;
             }
             // A patch of clean snow. The glass turns this pale tile white.
             let sx = tx.div_euclid(4);
             let sy = ty.div_euclid(4);
-            if hash(sx, sy.wrapping_add(29)) % 3 == 0 {
+            if hash(sx, sy.wrapping_add(29)).is_multiple_of(3) {
                 return T_SKY;
             }
             let n = hash(tx, ty.wrapping_add(91));
-            if n % 8 == 0 {
+            if n.is_multiple_of(8) {
                 T_DIRT
-            } else if n % 13 == 0 {
+            } else if n.is_multiple_of(13) {
                 T_CRATER
             } else {
                 tile
@@ -836,10 +950,12 @@ fn winter_tile(level: u8, tx: i32, ty: i32, tile: u8) -> u8 {
     }
     let wx = tx.div_euclid(3);
     let wy = ty.div_euclid(3);
-    if hash(wx, wy.wrapping_add(71)) % 4 == 0 {
+    if hash(wx, wy.wrapping_add(71)).is_multiple_of(4) {
         return T_TREE;
     }
-    if hash(tx, ty.wrapping_add(19)) % 6 == 0 && !matches!(tile, T_TRENCH | T_LIP | T_WATER) {
+    if hash(tx, ty.wrapping_add(19)).is_multiple_of(6)
+        && !matches!(tile, T_TRENCH | T_LIP | T_WATER)
+    {
         return tile;
     }
     T_SKY
@@ -872,7 +988,7 @@ fn burned_ring(level: u8, tx: i32, ty: i32) -> bool {
     let dx = tx - 22;
     let dy = ty - 32;
     let dist = dx * dx + dy * dy;
-    (49..=225).contains(&dist) && hash(tx, ty.wrapping_add(4)) % 4 != 0
+    (49..=225).contains(&dist) && !hash(tx, ty.wrapping_add(4)).is_multiple_of(4)
 }
 
 /// White snow outside the fight, with burned trunks still standing in it.
@@ -883,9 +999,9 @@ fn snow_field(tx: i32, ty: i32, tile: u8) -> u8 {
         _ => {
             let wx = tx.div_euclid(3);
             let wy = ty.div_euclid(3);
-            if hash(wx, wy.wrapping_add(53)) % 4 == 0 {
+            if hash(wx, wy.wrapping_add(53)).is_multiple_of(4) {
                 T_STUMP
-            } else if hash(tx, ty.wrapping_add(11)) % 14 == 0 {
+            } else if hash(tx, ty.wrapping_add(11)).is_multiple_of(14) {
                 T_DIRT
             } else {
                 T_SKY
@@ -935,23 +1051,26 @@ fn field_tile(level: u8, tx: i32, ty: i32) -> u8 {
     // Woods share a 3×3 cell, so trees stand together. Often enough to read on every district.
     let wx = tx.div_euclid(3);
     let wy = ty.div_euclid(3);
-    if hash(wx, wy.wrapping_add(17)) % 6 == 0 {
-        return if n % 6 == 0 { T_BUSH } else { T_TREE };
+    if hash(wx, wy.wrapping_add(17)).is_multiple_of(6) {
+        return if n.is_multiple_of(6) { T_BUSH } else { T_TREE };
     }
     // Mud yards between the copses. A 2×2 block, so the dirt does not speckle.
     let dx = tx.div_euclid(2);
     let dy = ty.div_euclid(2);
-    if hash(dx, dy.wrapping_add(3)) % 4 == 0 {
+    if hash(dx, dy.wrapping_add(3)).is_multiple_of(4) {
         return T_DIRT;
     }
-    if n % 29 == 0 {
+    if n.is_multiple_of(29) {
         return T_TUFT;
     }
-    if n % 53 == 0 {
+    if n.is_multiple_of(53) {
         return T_PATCH;
     }
     // One tone for a 4×4 patch. Neighbouring tiles stay in the same grass.
-    let tone = hash(tx.div_euclid(4), ty.div_euclid(4).wrapping_add(level as i32 * 13));
+    let tone = hash(
+        tx.div_euclid(4),
+        ty.div_euclid(4).wrapping_add(level as i32 * 13),
+    );
     match tone % 5 {
         0 => T_GRASS_D,
         1 => T_GRASS_L,
@@ -965,7 +1084,7 @@ pub(crate) fn pond(tx: i32, ty: i32) -> bool {
     let span = 20;
     let cx = tx.div_euclid(span);
     let cy = ty.div_euclid(span);
-    if hash(cx, cy.wrapping_add(41)) % 5 != 0 {
+    if !hash(cx, cy.wrapping_add(41)).is_multiple_of(5) {
         return false;
     }
     let ox = 6 + (hash(cx, cy) % 8) as i32;
@@ -974,7 +1093,7 @@ pub(crate) fn pond(tx: i32, ty: i32) -> bool {
     let mid_y = cy * span + oy;
     let rx = mid_x.rem_euclid(REGION);
     let ry = mid_y.rem_euclid(REGION);
-    if rx < 8 || rx > REGION - 8 || ry < 8 || ry > REGION - 8 {
+    if !(8..=REGION - 8).contains(&rx) || !(8..=REGION - 8).contains(&ry) {
         return false;
     }
     if (17..=24).contains(&ry) || (33..=40).contains(&ry) {
@@ -987,7 +1106,7 @@ pub(crate) fn pond(tx: i32, ty: i32) -> bool {
     if dist > radius * radius {
         return false;
     }
-    !(dist + 3 >= radius * radius && hash(tx, ty) % 3 == 0)
+    !(dist + 3 >= radius * radius && hash(tx, ty).is_multiple_of(3))
 }
 
 pub(crate) fn dist2_px(ax: i32, ay: i32, bx: i32, by: i32) -> i32 {
@@ -1034,7 +1153,14 @@ pub(crate) fn cache_spots(level: u8) -> [(i32, i32); 6] {
         [(14, 78), (34, 76), (24, 70), (6, 96), (42, 96), (24, 112)]
     } else {
         // One belt just south of the pad. Three trips, and one miss, fit the clock.
-        [(20, 96), (24, 96), (28, 96), (20, 100), (24, 100), (28, 100)]
+        [
+            (20, 96),
+            (24, 96),
+            (28, 96),
+            (20, 100),
+            (24, 100),
+            (28, 100),
+        ]
     }
 }
 
@@ -1268,4 +1394,3 @@ pub(crate) fn drive_step(guide: bool, dir: i32) -> i32 {
         0
     }
 }
-

@@ -88,6 +88,34 @@ pub(crate) fn survey(floor: &mut AffineBackground) -> (u32, u32) {
     (cleared, starred)
 }
 
+/// The card's first pilot flies `frames`. `each` sees the world after every frame.
+pub(crate) fn fly_for(
+    floor: &mut AffineBackground,
+    level: u8,
+    frames: i32,
+    each: &mut dyn FnMut(&mut World, &mut AffineBackground),
+) -> World {
+    let style = styles_for(level)[0];
+    let mut world = World::preview(floor, level);
+    let mut idle = || {};
+    while !world.boot_ready() {
+        world.boot_step(floor, 24, &mut idle);
+    }
+    let mut input = ButtonController::new();
+    let mut still = 0i16;
+    for _ in 0..frames {
+        if world.targets <= 0 || world.crashed || world.again {
+            break;
+        }
+        let state = stick(&world, style, &mut still);
+        input.update_with_state(state);
+        world.fly(&input, floor);
+        world.maintain_actors();
+        each(&mut world, floor);
+    }
+    world
+}
+
 fn styles_for(level: u8) -> &'static [Style] {
     match task_of(level) {
         Task::Gate => &[Style::Gap],
@@ -220,14 +248,14 @@ fn stick(world: &World, style: Style, still: &mut i16) -> ButtonState {
     if matches!(style, Style::Deck | Style::Cruise)
         && world.mode == Mode::Quad
         && world.age % 2 == 0
-        && aim.as_ref().is_some_and(|aim| world.arm != arm_for(world, aim.kind))
+        && aim
+            .as_ref()
+            .is_some_and(|aim| world.arm != arm_for(world, aim.kind))
         && !matches!(task_of(world.level), Task::Swarm)
+        && let Some(aim) = aim.as_ref()
+        && arm_for(world, aim.kind) != world.arm
     {
-        if let Some(aim) = aim.as_ref() {
-            if arm_for(world, aim.kind) != world.arm {
-                tap(&mut press, Button::A);
-            }
-        }
+        tap(&mut press, Button::A);
     }
     press
 }
@@ -242,7 +270,10 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     // Only the trucks that can end the card. A pacing truck still wants the
     // short stop that clears the lane.
     let driving = aim.kind == TRUCK
-        && matches!(task_of(world.level), Task::Convoy | Task::Drift | Task::Cover);
+        && matches!(
+            task_of(world.level),
+            Task::Convoy | Task::Drift | Task::Cover
+        );
     // Hover slide is slower than a driving truck, so these are caught at
     // cruise speed and stopped only once the lead is already under the nose.
     let lane = matches!(task_of(world.level), Task::Lane);
@@ -257,7 +288,10 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     let post = matches!(task_of(world.level), Task::Hearth) && aim.kind == MAN;
     let safe = if lane || (watched && !hatch) || (hatch && in_guns) {
         22
-    } else if hatch && body > 200 * 200 && (guns.is_empty() == false || matches!(task_of(world.level), Task::Thaw)) {
+    } else if hatch
+        && body > 200 * 200
+        && (!guns.is_empty() || matches!(task_of(world.level), Task::Thaw))
+    {
         // High over the lane, and over the mud. The dive starts close to the tank.
         22
     } else if post {
@@ -438,7 +472,9 @@ fn pursuit(world: &World, aim: Option<&Aim>, want_alt: i32, press: &mut ButtonSt
             19
         };
         let alt = world.alt >> 8;
-        if alt < floor || alt > floor + 4 || (matches!(task_of(world.level), Task::Cover) && alt <= floor + 1)
+        if alt < floor
+            || alt > floor + 4
+            || (matches!(task_of(world.level), Task::Cover) && alt <= floor + 1)
         {
             pitch_toward(world, floor, press);
         }
@@ -601,8 +637,10 @@ fn slide(world: &World, x: i32, y: i32, tight: bool, press: &mut ButtonState) {
 fn sight_pitch(world: &World, x: i32, y: i32, press: &mut ButtonState) {
     let (sin_r, cos_r) = world.heading();
     let (nx, ny, _) = world.nose_ground(sin_r, cos_r);
-    let nose = sin_r as i64 * i64::from(delta(nx, world.x)) - cos_r as i64 * i64::from(delta(ny, world.y));
-    let lead = sin_r as i64 * i64::from(delta(x, world.x)) - cos_r as i64 * i64::from(delta(y, world.y));
+    let nose =
+        sin_r as i64 * i64::from(delta(nx, world.x)) - cos_r as i64 * i64::from(delta(ny, world.y));
+    let lead =
+        sin_r as i64 * i64::from(delta(x, world.x)) - cos_r as i64 * i64::from(delta(y, world.y));
     let band = 8 * 256 * 256;
     if lead > nose + band {
         tap(press, Button::Up);
@@ -632,18 +670,8 @@ fn pitch_toward(world: &World, want: i32, press: &mut ButtonState) {
 
 /// Put the picture on the crosshair. True when it is already there.
 fn aim_glass(world: &World, x: i32, y: i32, z: i32, press: &mut ButtonState) -> bool {
-    let (sin_r, cos_r) = world.heading();
-    let Some((sx, sy)) = project(
-        world.x,
-        world.y,
-        world.alt,
-        sin_r,
-        cos_r,
-        world.horizon(),
-        x,
-        y,
-        z,
-    ) else {
+    let eye = Eye::new(world, world.horizon());
+    let Some((sx, sy)) = eye.project(x, y, z) else {
         face(world, x, y, press);
         return false;
     };
@@ -664,18 +692,8 @@ fn aim_glass(world: &World, x: i32, y: i32, z: i32, press: &mut ButtonState) -> 
 
 /// Same picture, but the nose is not allowed to dive through `floor`.
 fn aim_flat(world: &World, x: i32, y: i32, z: i32, floor: i32, press: &mut ButtonState) -> bool {
-    let (sin_r, cos_r) = world.heading();
-    let Some((sx, sy)) = project(
-        world.x,
-        world.y,
-        world.alt,
-        sin_r,
-        cos_r,
-        world.horizon(),
-        x,
-        y,
-        z,
-    ) else {
+    let eye = Eye::new(world, world.horizon());
+    let Some((sx, sy)) = eye.project(x, y, z) else {
         face(world, x, y, press);
         return false;
     };
@@ -713,10 +731,10 @@ fn nearest(world: &World) -> Option<Aim> {
     }
     let mut best: Option<(i32, Aim)> = None;
     let task = task_of(world.level);
-    if matches!(task, Task::Hq) {
-        if let Some((x, y)) = roof(world) {
-            keep(&mut best, world, x, y, 0, 0, ROOF);
-        }
+    if matches!(task, Task::Hq)
+        && let Some((x, y)) = roof(world)
+    {
+        keep(&mut best, world, x, y, 0, 0, ROOF);
     }
     if matches!(task, Task::Fetch) && !world.cargo {
         if let Some((x, y)) = nearest_cache(world) {
@@ -730,7 +748,7 @@ fn nearest(world: &World) -> Option<Aim> {
             // A pair shares a tile. Aiming at one of them flips every frame
             // and the grenade never leaves.
             let (x, y) = if matches!(task, Task::Pits) {
-                ((soldier.home_tx * 8 + 4) << 8, (soldier.home_ty * 8 + 4) << 8)
+                (tile_mid(soldier.home_tx), tile_mid(soldier.home_ty))
             } else {
                 (soldier.x, soldier.y)
             };
@@ -806,16 +824,7 @@ fn fleeing(world: &World) -> Option<Aim> {
 fn keep(best: &mut Option<(i32, Aim)>, world: &World, x: i32, y: i32, vx: i32, vy: i32, kind: u8) {
     let dist = dist2_px(world.x, world.y, x, y);
     if best.as_ref().is_none_or(|(near, _)| dist < *near) {
-        *best = Some((
-            dist,
-            Aim {
-                x,
-                y,
-                vx,
-                vy,
-                kind,
-            },
-        ));
+        *best = Some((dist, Aim { x, y, vx, vy, kind }));
     }
 }
 
@@ -828,8 +837,8 @@ fn roof(world: &World) -> Option<(i32, i32)> {
             if world.ground_at(tx, ty) == T_CRATER {
                 continue;
             }
-            sx += i64::from((tx * 8 + 4) << 8);
-            sy += i64::from((ty * 8 + 4) << 8);
+            sx += i64::from(tile_mid(tx));
+            sy += i64::from(tile_mid(ty));
             n += 1;
         }
     }
@@ -857,8 +866,16 @@ fn nearest_cache(world: &World) -> Option<(i32, i32)> {
 fn man_counts(task: Task, soldier: &Soldier) -> bool {
     match task {
         Task::Officer => soldier.officer,
-        Task::Hearth | Task::Trench | Task::Pits | Task::Grove | Task::Thaw | Task::Drift
-        | Task::Fpv | Task::Nest | Task::Rush | Task::Push => soldier.objective,
+        Task::Hearth
+        | Task::Trench
+        | Task::Pits
+        | Task::Grove
+        | Task::Thaw
+        | Task::Drift
+        | Task::Fpv
+        | Task::Nest
+        | Task::Rush
+        | Task::Push => soldier.objective,
         _ => false,
     }
 }
@@ -866,17 +883,20 @@ fn man_counts(task: Task, soldier: &Soldier) -> bool {
 fn truck_counts(task: Task, truck: &Truck) -> bool {
     match task {
         Task::Convoy | Task::Cover | Task::Drift => truck.goal,
-        Task::Night | Task::Heat | Task::Guide | Task::Column | Task::Lane | Task::Dart
-        | Task::Bend | Task::Push => truck.objective,
+        Task::Night
+        | Task::Heat
+        | Task::Guide
+        | Task::Column
+        | Task::Lane
+        | Task::Dart
+        | Task::Bend
+        | Task::Push => truck.objective,
         _ => false,
     }
 }
 
 fn armor_counts(task: Task) -> bool {
-    matches!(
-        task,
-        Task::Armor | Task::Flare | Task::Fetch | Task::Thaw
-    )
+    matches!(task, Task::Armor | Task::Flare | Task::Fetch | Task::Thaw)
 }
 
 fn man_vel(world: &World, soldier: &Soldier) -> (i32, i32) {
@@ -1001,7 +1021,10 @@ fn intercept(world: &World, lx: i32, ly: i32, vx: i32, vy: i32) -> (i32, i32) {
     let t1 = (-b - root) / (2 * a);
     let t2 = (-b + root) / (2 * a);
     let t = [t1, t2].into_iter().filter(|t| *t > 0).min().unwrap_or(0);
-    (lx.wrapping_add((vtx * t) as i32), ly.wrapping_add((vty * t) as i32))
+    (
+        lx.wrapping_add((vtx * t) as i32),
+        ly.wrapping_add((vty * t) as i32),
+    )
 }
 
 fn fall_frames(alt: i32, vz0: i32) -> i32 {

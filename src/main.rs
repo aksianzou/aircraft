@@ -161,10 +161,11 @@ include_aseprite!(
 );
 
 mod audio;
+mod divide;
 mod draw;
-mod save;
 #[cfg(test)]
 mod pilot;
+mod save;
 #[cfg(test)]
 mod tests;
 mod world;
@@ -209,6 +210,7 @@ fn main(mut gba: agb::Gba) -> ! {
 
     loop {
         input.update();
+        forget_sheets();
 
         if phase == Phase::Splash {
             let skip = input.is_just_pressed(Button::Start) || input.is_just_pressed(Button::A);
@@ -266,8 +268,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 Tri::Negative => menu = 0,
                 Tri::Zero => {}
             }
-            let choose =
-                input.is_just_pressed(Button::A) || input.is_just_pressed(Button::Start);
+            let choose = input.is_just_pressed(Button::A) || input.is_just_pressed(Button::Start);
             if choose {
                 if menu == 0 {
                     phase = Phase::Fly;
@@ -379,10 +380,10 @@ fn main(mut gba: agb::Gba) -> ! {
         // frame, which otherwise replays a slice of the music.
         let ending = phase == Phase::Win && world.level + 1 >= LEVEL_COUNT;
         if ending != end_tune {
-            if let Some(id) = music_id.take() {
-                if let Some(channel) = mixer.channel(&id) {
-                    channel.stop();
-                }
+            if let Some(id) = music_id.take()
+                && let Some(channel) = mixer.channel(&id)
+            {
+                channel.stop();
             }
             end_tune = ending;
         }
@@ -424,8 +425,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 &mut frame,
                 picked,
                 progress.mark_row(picked),
-                picked > 0,
-                picked < progress.unlocked,
+                (picked > 0, picked < progress.unlocked),
                 card_age,
                 sensor,
                 if glass_open(&progress, picked) {
@@ -459,12 +459,8 @@ fn main(mut gba: agb::Gba) -> ! {
         } else {
             0
         });
-        let horizon = if looking_down {
-            -160
-        } else {
-            world.horizon()
-        };
-        let (sin_r, cos_r) = world.heading();
+        let horizon = if looking_down { -160 } else { world.horizon() };
+        let eye = Eye::new(&world, horizon);
         build_floor(
             ring_space(world.x),
             ring_space(world.y),
@@ -506,7 +502,14 @@ fn main(mut gba: agb::Gba) -> ! {
 
         let mut frame = gfx.frame();
         let ground_id = ground.show(&mut frame);
-        mask_view(&mut frame, ground_id, sky_h, cockpit, false, world.bloom > 0);
+        mask_view(
+            &mut frame,
+            ground_id,
+            sky_h,
+            cockpit,
+            false,
+            world.bloom > 0,
+        );
 
         // First object submitted is the front-most. Instruments go in before
         // the snow, so the operator's panel stays up while the glass is noise.
@@ -515,7 +518,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 draw_pause(&mut frame, menu);
             }
             draw_hud(&mut frame, &world, true);
-            draw_cockpit(&mut frame, &world, sin_r, cos_r, true);
+            draw_cockpit(&mut frame, &world, &eye, true);
             draw_noise(&mut frame, world.age, true);
             mixer.frame();
             frame.commit();
@@ -545,7 +548,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 if matches!(world.why, Why::Hull | Why::Cell) {
                     world.age = world.age.wrapping_add(1);
                     draw_hud(&mut frame, &world, true);
-                    draw_cockpit(&mut frame, &world, sin_r, cos_r, true);
+                    draw_cockpit(&mut frame, &world, &eye, true);
                 }
             }
             Phase::Win => {
@@ -558,7 +561,7 @@ fn main(mut gba: agb::Gba) -> ! {
                     draw_pause(&mut frame, menu);
                 }
                 draw_hud(&mut frame, &world, world.signal_loss() >= 8);
-                draw_cockpit(&mut frame, &world, sin_r, cos_r, world.signal_loss() >= 8);
+                draw_cockpit(&mut frame, &world, &eye, world.signal_loss() >= 8);
                 draw_hurt(&mut frame, &world);
             }
             Phase::Splash => {}
@@ -573,15 +576,7 @@ fn main(mut gba: agb::Gba) -> ! {
             // work does not run on for two frames without a new music slice.
             mixer.frame();
             set_detail(playing);
-            draw_world(
-                &mut frame,
-                &world,
-                sin_r,
-                cos_r,
-                horizon,
-                cockpit,
-                sensor,
-            );
+            draw_world(&mut frame, &world, &eye, cockpit, sensor);
             draw_horizon(&mut frame, &world, horizon, sky_h, cockpit, sensor);
         }
 

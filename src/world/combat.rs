@@ -1,6 +1,6 @@
 use super::*;
+use crate::draw::{Eye, isqrt64};
 use agb::display::tiled::AffineBackground;
-use crate::draw::{isqrt64, project};
 
 impl super::World {
     pub(crate) fn try_shot(&mut self, kind: u8) -> bool {
@@ -11,8 +11,8 @@ impl super::World {
         };
         let (jx, jy) = release_error(self.alt, self.x, self.y, self.age, kind);
         *slot = Shot {
-            x: wrap_coord(self.x + jx),
-            y: wrap_coord(self.y + jy),
+            x: self.x + jx,
+            y: self.y + jy,
             z: self.alt,
             vx: self.vx,
             vy: self.vy,
@@ -36,18 +36,13 @@ impl super::World {
         let fwd = (self.alt as i64) * (FOCAL as i64) * (FLOOR_ZOOM as i64) / drop as i64;
         // Ninety tiles. That covers a group by the posts and the ground ahead of it.
         let lead = (fwd >> 8).clamp(8, 720) as i32;
-        (
-            wrap_coord(self.x + sin_r * lead),
-            wrap_coord(self.y - cos_r * lead),
-            0,
-        )
+        (self.x + sin_r * lead, self.y - cos_r * lead, 0)
     }
 
     /// The drone in the glass, if the crosshair is on its picture.
     /// One above the airframe is not drawn, so it cannot be the target either.
     pub(crate) fn foe_under_sight(&self) -> Option<usize> {
-        let (sin_r, cos_r) = self.heading();
-        let horizon = self.horizon();
+        let eye = Eye::new(self, self.horizon());
         let alt_px = self.alt >> 8;
         let aim_y = VIEW_Y + VIEW_H / 2;
         let mut best: Option<(usize, i32)> = None;
@@ -55,17 +50,7 @@ impl super::World {
             if !foe.alive || (foe.z >> 8) + 2 >= alt_px {
                 continue;
             }
-            let Some((sx, sy)) = project(
-                self.x,
-                self.y,
-                self.alt,
-                sin_r,
-                cos_r,
-                horizon,
-                foe.x,
-                foe.y,
-                foe.z,
-            ) else {
+            let Some((sx, sy)) = eye.project(foe.x, foe.y, foe.z) else {
                 continue;
             };
             let dx = sx - WIDTH / 2;
@@ -85,8 +70,7 @@ impl super::World {
     /// The crosshair on the body, not the feet. The figure is drawn above the
     /// ground point, so a round aimed at the picture has to go to the man.
     pub(crate) fn man_under_sight(&self) -> Option<usize> {
-        let (sin_r, cos_r) = self.heading();
-        let horizon = self.horizon();
+        let eye = Eye::new(self, self.horizon());
         let aim_x = WIDTH / 2;
         let aim_y = VIEW_Y + VIEW_H / 2;
         let alt_px = (self.alt >> 8).max(1);
@@ -95,20 +79,10 @@ impl super::World {
             if !soldier.alive {
                 continue;
             }
-            let Some((sx, sy)) = project(
-                self.x,
-                self.y,
-                self.alt,
-                sin_r,
-                cos_r,
-                horizon,
-                soldier.x,
-                soldier.y,
-                0,
-            ) else {
+            let Some((sx, sy)) = eye.project(soldier.x, soldier.y, 0) else {
                 continue;
             };
-            let drop = (sy - horizon).max(1);
+            let drop = (sy - eye.horizon).max(1);
             let span = (16 * drop / (alt_px * FLOOR_ZOOM)).max(6);
             let half = (span / 2).clamp(4, 14);
             let dx = (sx - aim_x).abs();
@@ -186,7 +160,11 @@ impl super::World {
         // A flat barrel cannot crane over its own hull. The old ten-pixel
         // pin was smaller than the hatch, so hovering to aim ate the shells.
         // Flak still points up.
-        let overhead = if slope < 8 { dist < TANK_NEAR } else { dist < 10 };
+        let overhead = if slope < 8 {
+            dist < TANK_NEAR
+        } else {
+            dist < 10
+        };
         let steps = if overhead {
             if slope >= 8 { 16 } else { 10 }
         } else {
@@ -370,8 +348,8 @@ impl super::World {
     }
 
     pub(crate) fn step_gun(&mut self, bg: &mut AffineBackground, index: usize) {
-        self.shots[index].x = wrap_coord(self.shots[index].x + self.shots[index].vx);
-        self.shots[index].y = wrap_coord(self.shots[index].y + self.shots[index].vy);
+        self.shots[index].x += self.shots[index].vx;
+        self.shots[index].y += self.shots[index].vy;
         self.shots[index].z += self.shots[index].vz;
         self.shots[index].life += 1;
         let x = self.shots[index].x;
@@ -385,10 +363,7 @@ impl super::World {
         }
         let mut bird = None;
         for (slot, foe) in self.foes.iter().enumerate() {
-            if foe.alive
-                && dist2_px(x, y, foe.x, foe.y) <= 8 * 8
-                && ((z - foe.z) >> 8).abs() <= 5
-            {
+            if foe.alive && dist2_px(x, y, foe.x, foe.y) <= 8 * 8 && ((z - foe.z) >> 8).abs() <= 5 {
                 bird = Some(slot);
                 break;
             }
@@ -513,7 +488,9 @@ impl super::World {
                 if defend {
                     let dx = base_x.wrapping_sub(foe.x);
                     let step_x = dx.signum() * 20;
-                    foe.x = foe.x.wrapping_add(if step_x.abs() > dx.abs() { dx } else { step_x });
+                    foe.x = foe
+                        .x
+                        .wrapping_add(if step_x.abs() > dx.abs() { dx } else { step_x });
                     foe.y = foe.y.wrapping_add(speed);
                 } else {
                     if foe.heading == 0 {
@@ -603,10 +580,11 @@ impl super::World {
             x,
             y,
             if officer { 200 } else { 50 },
-            officer,
-            false,
-            false,
-            objective,
+            Kill {
+                officer,
+                objective,
+                ..Kill::default()
+            },
         );
     }
 
@@ -634,10 +612,12 @@ impl super::World {
             x,
             y,
             if goal { 200 } else { 100 },
-            false,
-            !goal,
-            goal,
-            objective,
+            Kill {
+                truck: !goal,
+                goal,
+                objective,
+                ..Kill::default()
+            },
         );
     }
 
@@ -661,7 +641,7 @@ impl super::World {
         if objective {
             self.claim_armor();
         }
-        self.note_kill(bg, x, y, 150, false, false, false, false);
+        self.note_kill(bg, x, y, 150, Kill::default());
     }
 
     pub(crate) fn hurt_bunker(&mut self, bg: &mut AffineBackground, index: usize) {
@@ -681,14 +661,14 @@ impl super::World {
         if objective {
             self.claim_pill();
         }
-        self.note_kill(bg, x, y, 100, false, false, false, false);
+        self.note_kill(bg, x, y, 100, Kill::default());
     }
 
     pub(crate) fn step_flak(&mut self, index: usize) {
         let kind = self.shots[index].kind;
         self.shots[index].vz -= GRAVITY;
-        self.shots[index].x = wrap_coord(self.shots[index].x + self.shots[index].vx);
-        self.shots[index].y = wrap_coord(self.shots[index].y + self.shots[index].vy);
+        self.shots[index].x += self.shots[index].vx;
+        self.shots[index].y += self.shots[index].vy;
         self.shots[index].z += self.shots[index].vz;
         self.shots[index].life += 1;
         let x = self.shots[index].x;
@@ -712,7 +692,7 @@ impl super::World {
             self.add_boom(self.x, self.y, z, 0);
             return;
         }
-        if life > 28 || z > 48 << 8 || z < 0 {
+        if life > 28 || !(0..=48 << 8).contains(&z) {
             self.shots[index].alive = false;
         }
     }
@@ -733,8 +713,8 @@ impl super::World {
             }
             self.shots[index].vz -= GRAVITY;
             self.shots[index].z += self.shots[index].vz;
-            self.shots[index].x = wrap_coord(self.shots[index].x + self.shots[index].vx);
-            self.shots[index].y = wrap_coord(self.shots[index].y + self.shots[index].vy);
+            self.shots[index].x += self.shots[index].vx;
+            self.shots[index].y += self.shots[index].vy;
             self.shots[index].life += 1;
             if self.shots[index].z > 0 && self.shots[index].life < 400 {
                 continue;
@@ -765,7 +745,11 @@ impl super::World {
             return;
         }
         let probe = dir.signum() * (10 << 8);
-        let (ax, ay) = if vertical { (x, y + probe) } else { (x + probe, y) };
+        let (ax, ay) = if vertical {
+            (x, y + probe)
+        } else {
+            (x + probe, y)
+        };
         if self.ground_at(tile_of(ax), tile_of(ay)) == T_ROAD {
             return;
         }
@@ -786,7 +770,11 @@ impl super::World {
             (self.tanks[index].x, self.tanks[index].y)
         };
         let back = -dir.signum() * (10 << 8);
-        let (bx, by) = if vertical { (x, y + back) } else { (x + back, y) };
+        let (bx, by) = if vertical {
+            (x, y + back)
+        } else {
+            (x + back, y)
+        };
         let here = self.ground_at(tile_of(x), tile_of(y)) == T_ROAD;
         let behind = self.ground_at(tile_of(bx), tile_of(by)) == T_ROAD;
         if here || behind {
@@ -861,7 +849,8 @@ impl super::World {
             if !self.soldiers[index].alive {
                 continue;
             }
-            if self.soldiers[index].objective && matches!(task_of(self.level), Task::Fpv | Task::Nest)
+            if self.soldiers[index].objective
+                && matches!(task_of(self.level), Task::Fpv | Task::Nest)
             {
                 continue;
             }
@@ -913,8 +902,8 @@ impl super::World {
             bit.life += 1;
             if bit.z > 0 {
                 bit.vz -= GRAVITY;
-                bit.x = wrap_coord(bit.x + bit.vx);
-                bit.y = wrap_coord(bit.y + bit.vy);
+                bit.x += bit.vx;
+                bit.y += bit.vy;
                 bit.z = (bit.z + bit.vz).max(0);
             }
             if bit.life > 48 {
@@ -923,7 +912,15 @@ impl super::World {
         }
     }
 
-    pub(crate) fn explode(&mut self, bg: &mut AffineBackground, x: i32, y: i32, radius: i32, depth: i32, kind: u8) {
+    pub(crate) fn explode(
+        &mut self,
+        bg: &mut AffineBackground,
+        x: i32,
+        y: i32,
+        radius: i32,
+        depth: i32,
+        kind: u8,
+    ) {
         // A grenade is fragments, not a fireball. The picture stays a spark.
         let picture = if kind == KIND_VOG { 4 } else { radius };
         self.add_boom(x, y, 0, picture);
@@ -1012,25 +1009,43 @@ impl super::World {
             + officers_hit * 150
             + men_hit * 50;
         for _ in 0..trucks_hit {
-            self.claim(false, true, false, false);
+            self.claim(Kill {
+                truck: true,
+                ..Kill::default()
+            });
         }
         for _ in 0..obj_trucks {
-            self.claim(false, true, false, true);
+            self.claim(Kill {
+                truck: true,
+                objective: true,
+                ..Kill::default()
+            });
         }
         for _ in 0..goals_hit {
-            self.claim(false, false, true, true);
+            self.claim(Kill {
+                goal: true,
+                objective: true,
+                ..Kill::default()
+            });
         }
         for _ in 0..officers_hit {
-            self.claim(true, false, false, true);
+            self.claim(Kill {
+                officer: true,
+                objective: true,
+                ..Kill::default()
+            });
         }
         for _ in 0..obj_men {
-            self.claim(false, false, false, true);
+            self.claim(Kill {
+                objective: true,
+                ..Kill::default()
+            });
         }
         for _ in 0..men_hit {
-            self.claim(false, false, false, false);
+            self.claim(Kill::default());
         }
-        for step in 0..graves_n {
-            self.mark_quiet(graves[step].0, graves[step].1);
+        for &(gx, gy) in &graves[..graves_n] {
+            self.mark_quiet(gx, gy);
         }
         let mut wrecks = [(0i32, 0i32); MAX_TANKS + MAX_BUNKERS];
         let mut wrecks_n = 0;
@@ -1103,11 +1118,10 @@ impl super::World {
         for _ in 0..pills {
             self.claim_pill();
         }
-        for step in 0..wrecks_n {
-            self.mark_quiet(wrecks[step].0, wrecks[step].1);
+        for &(wx, wy) in &wrecks[..wrecks_n] {
+            self.mark_quiet(wx, wy);
         }
-        for step in 0..flung_n {
-            let (px, py, turret) = flung[step];
+        for &(px, py, turret) in &flung[..flung_n] {
             if turret {
                 self.add_plume(px, py);
             }
@@ -1134,8 +1148,8 @@ impl super::World {
                 count += 1;
             }
         }
-        for step in 0..count {
-            self.explode(bg, chain[step].0, chain[step].1, 24, depth + 1, KIND_BOMB);
+        for &(cx, cy) in &chain[..count] {
+            self.explode(bg, cx, cy, 24, depth + 1, KIND_BOMB);
         }
     }
 
@@ -1240,9 +1254,10 @@ impl super::World {
         if !matches!(task_of(self.level), Task::Convoy | Task::Drift) || self.targets <= 0 {
             return;
         }
-        let arrived = self.trucks.iter().any(|truck| {
-            truck.alive && truck.goal && tile_of(truck.y) <= 4
-        });
+        let arrived = self
+            .trucks
+            .iter()
+            .any(|truck| truck.alive && truck.goal && tile_of(truck.y) <= 4);
         if arrived {
             self.fail(Why::Truck);
         }
@@ -1268,12 +1283,14 @@ impl super::World {
         if !matches!(task, Task::Rush | Task::Push) || self.targets <= 0 {
             return;
         }
-        let men = self.soldiers.iter().any(|soldier| {
-            soldier.alive && soldier.objective && tile_of(soldier.y) <= 14
-        });
-        let rigs = self.trucks.iter().any(|truck| {
-            truck.alive && truck.objective && tile_of(truck.y) <= 14
-        });
+        let men = self
+            .soldiers
+            .iter()
+            .any(|soldier| soldier.alive && soldier.objective && tile_of(soldier.y) <= 14);
+        let rigs = self
+            .trucks
+            .iter()
+            .any(|truck| truck.alive && truck.objective && tile_of(truck.y) <= 14);
         if men || rigs {
             self.fail(Why::Line);
         }
@@ -1284,9 +1301,10 @@ impl super::World {
         if !defend_card(self.level) || self.targets <= 0 || self.crashed {
             return;
         }
-        let reached = self.foes.iter().any(|foe| {
-            foe.alive && dist2_px(foe.x, foe.y, self.pad_x, self.pad_y) <= 24 * 24
-        });
+        let reached = self
+            .foes
+            .iter()
+            .any(|foe| foe.alive && dist2_px(foe.x, foe.y, self.pad_x, self.pad_y) <= 24 * 24);
         if reached {
             self.add_boom(self.pad_x, self.pad_y, 0, 0);
             self.fail(Why::Base);
@@ -1356,8 +1374,8 @@ impl super::World {
             }
         }
         self.booms[slot] = Boom {
-            x: wrap_coord(x),
-            y: wrap_coord(y),
+            x,
+            y,
             z,
             radius: radius.clamp(0, 120) as i16,
             frame: 0,
@@ -1395,7 +1413,7 @@ impl super::World {
     pub(crate) fn fling(&mut self, x: i32, y: i32, turret: bool) {
         let mut n = 0u32;
         if turret {
-            self.launch(x, y, SCRAP_TURRET, 30, -20, 72, n);
+            self.launch(x, y, SCRAP_TURRET, (30, -20, 72), n);
             n += 1;
         }
         for step in 0..4 {
@@ -1404,12 +1422,12 @@ impl super::World {
             let vy = (hash(y, step) % 240) as i32 - 120;
             let vz = 40 + (spin % 24) as i32;
             let kind = if step < 2 { SCRAP_WHEEL } else { SCRAP_BIT };
-            self.launch(x, y, kind, vx, vy, vz, n);
+            self.launch(x, y, kind, (vx, vy, vz), n);
             n += 1;
         }
     }
 
-    fn launch(&mut self, x: i32, y: i32, kind: u8, vx: i32, vy: i32, vz: i32, salt: u32) {
+    fn launch(&mut self, x: i32, y: i32, kind: u8, (vx, vy, vz): (i32, i32, i32), salt: u32) {
         let slot = self
             .scrap
             .iter()

@@ -76,13 +76,17 @@ fn start_loop(
 }
 
 /// Menu and the opening cards keep the tune. Flight is the field instead.
-pub(crate) fn music_bed(mixer: &mut agb::sound::mixer::Mixer, slot: &mut Option<ChannelId>, play: bool) {
+pub(crate) fn music_bed(
+    mixer: &mut agb::sound::mixer::Mixer,
+    slot: &mut Option<ChannelId>,
+    play: bool,
+) {
     if play {
         start_loop(mixer, slot, MUSIC, num!(0.5));
-    } else if let Some(id) = slot.take() {
-        if let Some(channel) = mixer.channel(&id) {
-            channel.stop();
-        }
+    } else if let Some(id) = slot.take()
+        && let Some(channel) = mixer.channel(&id)
+    {
+        channel.stop();
     }
 }
 
@@ -101,7 +105,7 @@ pub(crate) fn ambience(
     sensor: Sensor,
 ) {
     let day = matches!(sensor, Sensor::Day);
-    if day && world.age > 40 && hash(world.age, 4) % 190 == 0 {
+    if day && world.age > 40 && hash(world.age, 4).is_multiple_of(190) {
         let bird = if hash(world.age, 2) & 1 == 0 {
             BIRD_SFX
         } else {
@@ -110,27 +114,31 @@ pub(crate) fn ambience(
         cue(mixer, bird, num!(0.28));
     }
     let close = 72 * 72;
-    let by_rig = world.trucks.iter().any(|truck| {
-        truck.alive && dist2_px(world.x, world.y, truck.x, truck.y) <= close
-    }) || world.tanks.iter().any(|tank| {
-        tank.alive && dist2_px(world.x, world.y, tank.x, tank.y) <= close
-    });
-    if by_rig && hash(world.age, 21) % 75 == 0 {
+    let by_rig = world
+        .trucks
+        .iter()
+        .any(|truck| truck.alive && dist2_px(world.x, world.y, truck.x, truck.y) <= close)
+        || world
+            .tanks
+            .iter()
+            .any(|tank| tank.alive && dist2_px(world.x, world.y, tank.x, tank.y) <= close);
+    if by_rig && hash(world.age, 21).is_multiple_of(75) {
         cue(mixer, ENGINE_SFX, num!(0.3));
     }
     let talk = 48 * 48;
-    let by_men = world.soldiers.iter().any(|soldier| {
-        soldier.alive && dist2_px(world.x, world.y, soldier.x, soldier.y) <= talk
-    });
-    if by_men && hash(world.age, 27) % 120 == 0 {
+    let by_men = world
+        .soldiers
+        .iter()
+        .any(|soldier| soldier.alive && dist2_px(world.x, world.y, soldier.x, soldier.y) <= talk);
+    if by_men && hash(world.age, 27).is_multiple_of(120) {
         cue(mixer, VOICE_SFX, num!(0.28));
     }
     let shot_every = if day { 150 } else { 80 };
     let boom_every = if day { 340 } else { 200 };
-    if !shot && world.age > 40 && hash(world.age, 9) % shot_every == 0 {
+    if !shot && world.age > 40 && hash(world.age, 9).is_multiple_of(shot_every) {
         cue(mixer, FAR_SFX, num!(0.42));
     }
-    if !blew && world.age > 40 && hash(world.age, 13) % boom_every == 0 {
+    if !blew && world.age > 40 && hash(world.age, 13).is_multiple_of(boom_every) {
         cue(mixer, RUMBLE_SFX, num!(0.4));
     }
 }

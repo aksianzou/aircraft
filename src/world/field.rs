@@ -1,9 +1,9 @@
 use super::*;
+use crate::backgrounds;
 use agb::display::tiled::AffineBackground;
 use agb::fixnum::num;
 use agb::input::{Button, ButtonController, Tri};
 use alloc::vec;
-use crate::backgrounds;
 
 impl super::World {
     /// Seats the sortie without writing the map. The menu fills that a few rows at a time.
@@ -27,8 +27,8 @@ impl super::World {
             Task::Swarm if defend_card(level) => 22,
             _ => 12,
         };
-        let start_x = (tx * 8 + 4) << 8;
-        let start_y = (ty * 8 + 4) << 8;
+        let start_x = tile_mid(tx);
+        let start_y = tile_mid(ty);
         let start_alt = alt << 8;
         let fetch = matches!(task, Task::Fetch);
         let (bombs, he, mines, vog) = rack(task);
@@ -146,7 +146,12 @@ impl super::World {
     }
 
     /// Ground window first, then the units that stand on it. `rows` is the budget for this frame.
-    pub(crate) fn boot_step(&mut self, bg: &mut AffineBackground, rows: i32, pump: &mut dyn FnMut()) {
+    pub(crate) fn boot_step(
+        &mut self,
+        bg: &mut AffineBackground,
+        rows: i32,
+        pump: &mut dyn FnMut(),
+    ) {
         if self.boot < 0 {
             return;
         }
@@ -188,16 +193,16 @@ impl super::World {
     }
 
     pub(crate) fn gate_x(&self) -> i32 {
-        (24 * 8 + 4) << 8
+        tile_mid(24)
     }
 
     pub(crate) fn gate_y(&self) -> i32 {
-        (6 * 8 + 4) << 8
+        tile_mid(6)
     }
 
     /// South of the posts, on the way from the pad. Hover here, then drop.
     pub(crate) fn drill_mark(&self) -> (i32, i32) {
-        ((18 * 8 + 4) << 8, (78 * 8 + 4) << 8)
+        (tile_mid(18), tile_mid(78))
     }
 
     pub(crate) fn seat_foes(&mut self) {
@@ -205,8 +210,8 @@ impl super::World {
             if tx == i32::MIN {
                 continue;
             }
-            let x = (tx * 8 + 4) << 8;
-            let y = (ty * 8 + 4) << 8;
+            let x = tile_mid(tx);
+            let y = tile_mid(ty);
             let wing = foe_wing(self.level, index);
             self.foes[index] = Foe {
                 x,
@@ -229,8 +234,8 @@ impl super::World {
             Task::Trench => {
                 for (index, tx) in [22, 23, 24, 25, 26, 27].into_iter().enumerate() {
                     self.soldiers[index] = Soldier {
-                        x: (tx * 8 + 4) << 8,
-                        y: (21 * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(21),
                         dir: 80,
                         step: 0,
                         home_tx: tx,
@@ -245,8 +250,8 @@ impl super::World {
             }
             Task::Officer => {
                 self.soldiers[0] = Soldier {
-                    x: (24 * 8 + 4) << 8,
-                    y: (21 * 8 + 4) << 8,
+                    x: tile_mid(24),
+                    y: tile_mid(21),
                     dir: 80,
                     step: 0,
                     home_tx: 24,
@@ -269,8 +274,8 @@ impl super::World {
                 };
                 for (index, tx) in spots.into_iter().enumerate() {
                     self.trucks[index] = Truck {
-                        x: (tx * 8 + 4) << 8,
-                        y: (row * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(row),
                         dir: 150,
                         vertical: false,
                         home_tx: tx,
@@ -287,8 +292,8 @@ impl super::World {
                 // Northbound between the posts. The quads sit ahead of it.
                 // The run to the line is long enough for the new road speed.
                 self.trucks[0] = Truck {
-                    x: (24 * 8 + 4) << 8,
-                    y: (52 * 8 + 4) << 8,
+                    x: tile_mid(24),
+                    y: tile_mid(52),
                     dir: -32,
                     vertical: true,
                     home_tx: 24,
@@ -304,8 +309,8 @@ impl super::World {
                 // Northbound on the west road. Far enough south that the
                 // faster truck still takes a while to reach the mark.
                 self.trucks[0] = Truck {
-                    x: (0 * 8 + 4) << 8,
-                    y: (40 * 8 + 4) << 8,
+                    x: tile_mid(0),
+                    y: tile_mid(40),
                     dir: -32,
                     vertical: true,
                     home_tx: 0,
@@ -323,8 +328,8 @@ impl super::World {
                 for (index, tx) in spots.into_iter().enumerate() {
                     let row = if moving { 64 } else { 20 };
                     self.trucks[index] = Truck {
-                        x: (tx * 8 + 4) << 8,
-                        y: (row * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(row),
                         dir: if moving { 80 } else { 0 },
                         vertical: false,
                         home_tx: tx,
@@ -342,8 +347,8 @@ impl super::World {
                 // six-pixel hole is not a shot you can set up.
                 for (index, tx) in [12, 28, 44].into_iter().enumerate() {
                     self.tanks[index] = Tank {
-                        x: (tx * 8 + 4) << 8,
-                        y: (64 * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(64),
                         dir: 0,
                         vertical: false,
                         home_tx: tx,
@@ -358,8 +363,8 @@ impl super::World {
             Task::Pill => {
                 for (index, tx) in [16, 28, 40].into_iter().enumerate() {
                     self.bunkers[index] = Bunker {
-                        x: (tx * 8 + 4) << 8,
-                        y: (21 * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(21),
                         home_tx: tx,
                         home_ty: 21,
                         objective: true,
@@ -373,8 +378,8 @@ impl super::World {
                 let spots = [(16, 41), (17, 40), (31, 43), (32, 42), (46, 40), (47, 41)];
                 for (index, (tx, ty)) in spots.into_iter().enumerate() {
                     self.soldiers[index] = Soldier {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: 0,
                         step: 0,
                         home_tx: tx,
@@ -391,18 +396,11 @@ impl super::World {
                 // Three clumps. A mark on the truck reaches the two men beside it.
                 // The east clump is nearest the posts, the centre one is last.
                 let trucks = [(14, 52), (30, 56), (46, 48)];
-                let men = [
-                    (15, 52),
-                    (14, 51),
-                    (31, 56),
-                    (30, 55),
-                    (45, 48),
-                    (46, 47),
-                ];
+                let men = [(15, 52), (14, 51), (31, 56), (30, 55), (45, 48), (46, 47)];
                 for (index, (tx, ty)) in trucks.into_iter().enumerate() {
                     self.trucks[index] = Truck {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: -80,
                         vertical: true,
                         home_tx: tx,
@@ -416,8 +414,8 @@ impl super::World {
                 }
                 for (index, (tx, ty)) in men.into_iter().enumerate() {
                     self.soldiers[index] = Soldier {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: 0,
                         step: 0,
                         home_tx: tx,
@@ -459,8 +457,8 @@ impl super::World {
                 let spots = [(14, 24), (24, 22), (32, 24)];
                 for (index, (tx, ty)) in spots.into_iter().enumerate() {
                     self.trucks[index] = Truck {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: if index == 1 { -90 } else { 90 },
                         vertical: false,
                         home_tx: tx,
@@ -479,8 +477,8 @@ impl super::World {
                 let spots = [(16, 10), (24, 8), (32, 10)];
                 for (index, (tx, ty)) in spots.into_iter().enumerate() {
                     self.tanks[index] = Tank {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: 0,
                         vertical: false,
                         home_tx: tx,
@@ -496,8 +494,8 @@ impl super::World {
                 let spots = [(22, 84), (32, 62), (28, 50), (18, 36)];
                 for (index, (tx, ty)) in spots.into_iter().enumerate() {
                     self.soldiers[index] = Soldier {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: 0,
                         step: 0,
                         home_tx: tx,
@@ -513,15 +511,15 @@ impl super::World {
             Task::Fetch => {
                 for (index, (tx, ty)) in cache_spots(self.level).into_iter().enumerate() {
                     self.caches[index] = Cache {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         alive: true,
                     };
                 }
                 for (index, (tx, ty)) in mortar_spots(self.level).into_iter().enumerate() {
                     self.tanks[index] = Tank {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: 0,
                         vertical: false,
                         home_tx: tx,
@@ -537,8 +535,8 @@ impl super::World {
                 let spots = [(14, 24), (24, 22), (32, 24)];
                 for (index, (tx, ty)) in spots.into_iter().enumerate() {
                     self.bunkers[index] = Bunker {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         home_tx: tx,
                         home_ty: ty,
                         objective: true,
@@ -564,8 +562,8 @@ impl super::World {
                 ];
                 for (index, (tx, ty)) in men.into_iter().enumerate() {
                     self.soldiers[index] = Soldier {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: 0,
                         step: 0,
                         home_tx: tx,
@@ -580,8 +578,8 @@ impl super::World {
             }
             Task::Drift => {
                 self.trucks[0] = Truck {
-                    x: (0 * 8 + 4) << 8,
-                    y: (46 * 8 + 4) << 8,
+                    x: tile_mid(0),
+                    y: tile_mid(46),
                     dir: -32,
                     vertical: true,
                     home_tx: 0,
@@ -597,8 +595,8 @@ impl super::World {
                 let men = [(6, 36), (7, 36), (10, 34)];
                 for (index, (tx, ty)) in men.into_iter().enumerate() {
                     self.soldiers[index] = Soldier {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: 80,
                         step: 0,
                         home_tx: tx,
@@ -615,8 +613,8 @@ impl super::World {
                 let spots = [(12, 42), (28, 36), (40, 44)];
                 for (index, (tx, ty)) in spots.into_iter().enumerate() {
                     self.tanks[index] = Tank {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: 0,
                         vertical: false,
                         home_tx: tx,
@@ -647,8 +645,8 @@ impl super::World {
             }
             Task::Hearth => {
                 self.soldiers[0] = Soldier {
-                    x: (24 * 8 + 4) << 8,
-                    y: (30 * 8 + 4) << 8,
+                    x: tile_mid(24),
+                    y: tile_mid(30),
                     dir: 80,
                     step: 0,
                     home_tx: 24,
@@ -664,8 +662,8 @@ impl super::World {
                 let men = [(23, 30), (25, 30), (20, 29), (28, 29)];
                 for (index, (tx, ty)) in men.into_iter().enumerate() {
                     self.soldiers[index + 1] = Soldier {
-                        x: (tx * 8 + 4) << 8,
-                        y: (ty * 8 + 4) << 8,
+                        x: tile_mid(tx),
+                        y: tile_mid(ty),
                         dir: -80,
                         step: 0,
                         home_tx: tx,
@@ -714,7 +712,7 @@ impl super::World {
                 ];
                 for (tx, ty, kind, vertical) in wrecks {
                     let dir = if vertical { 80 } else { 40 };
-                    self.leave_husk((tx * 8 + 4) << 8, (ty * 8 + 4) << 8, dir, vertical, kind);
+                    self.leave_husk(tile_mid(tx), tile_mid(ty), dir, vertical, kind);
                 }
             }
             _ => {}
@@ -722,17 +720,30 @@ impl super::World {
     }
 
     pub(crate) fn hq_goal(&self, tx: i32, ty: i32) -> bool {
-        matches!(task_of(self.level), Task::Hq) && (22..=24).contains(&tx) && (16..=17).contains(&ty)
+        matches!(task_of(self.level), Task::Hq)
+            && (22..=24).contains(&tx)
+            && (16..=17).contains(&ty)
     }
 
     /// A kill counts only when it is this card's objective.
-    pub(crate) fn claim(&mut self, officer: bool, truck: bool, goal: bool, objective: bool) {
+    pub(crate) fn claim(&mut self, kill: Kill) {
+        let Kill {
+            officer,
+            truck,
+            goal,
+            objective,
+        } = kill;
         let counts = match task_of(self.level) {
             Task::Officer => officer,
             Task::Hearth | Task::Trench | Task::Pits | Task::Grove | Task::Thaw => {
                 objective && !truck
             }
-            Task::Night | Task::Heat | Task::Guide | Task::Column | Task::Lane | Task::Dart
+            Task::Night
+            | Task::Heat
+            | Task::Guide
+            | Task::Column
+            | Task::Lane
+            | Task::Dart
             | Task::Bend => truck && objective,
             Task::Convoy | Task::Cover => goal,
             Task::Drift => goal || objective && !truck,
@@ -740,8 +751,14 @@ impl super::World {
             Task::Rush => objective && !truck,
             Task::Nest => objective && !truck,
             Task::Push => objective,
-            Task::Gate | Task::Hq | Task::Armor | Task::Pill | Task::Flare | Task::Skirt
-            | Task::Fetch | Task::Swarm => false,
+            Task::Gate
+            | Task::Hq
+            | Task::Armor
+            | Task::Pill
+            | Task::Flare
+            | Task::Skirt
+            | Task::Fetch
+            | Task::Swarm => false,
         };
         if counts && self.targets > 0 {
             self.targets -= 1;
@@ -874,10 +891,11 @@ impl super::World {
         };
         // The displaced scar must leave the map. Only if that cell is still
         // the one stored in the ring — a cell 128 tiles away shares the slot.
-        if let Some((ox, oy)) = restore {
-            if (ox - self.view_tx).abs() <= SPAN && (oy - self.view_ty).abs() <= SPAN {
-                self.blit(ox, oy);
-            }
+        if let Some((ox, oy)) = restore
+            && (ox - self.view_tx).abs() <= SPAN
+            && (oy - self.view_ty).abs() <= SPAN
+        {
+            self.blit(ox, oy);
         }
     }
 
@@ -894,15 +912,7 @@ impl super::World {
     }
 
     pub(crate) fn blit(&self, tx: i32, ty: i32) {
-        let hx = tx.rem_euclid(VIEW) as usize;
-        let hy = ty.rem_euclid(VIEW) as usize;
-        // Park loaded tileset slot 0 into hardware index 1, and so on.
-        let hw = self.ground_at(tx, ty) + 1;
-        unsafe {
-            (0x0600_C000 as *mut u8)
-                .add(hy * 128 + hx)
-                .write_volatile(hw);
-        }
+        poke_ground(tx, ty, self.ground_at(tx, ty));
     }
 
     /// Keep every ground tile in VRAM. The 64×64 loader is not what is shown.
@@ -971,33 +981,22 @@ impl super::World {
     }
 
     pub(crate) fn occupied(&self, tx: i32, ty: i32) -> bool {
-        self.soldiers
-            .iter()
-            .any(|soldier| soldier.alive && soldier.home_tx == tx && soldier.home_ty == ty)
-            || self
-                .trucks
-                .iter()
-                .any(|truck| truck.alive && truck.home_tx == tx && truck.home_ty == ty)
-            || self
-                .tanks
-                .iter()
-                .any(|tank| tank.alive && tank.home_tx == tx && tank.home_ty == ty)
-            || self
-                .bunkers
-                .iter()
-                .any(|bunker| bunker.alive && bunker.home_tx == tx && bunker.home_ty == ty)
+        homed(&self.soldiers, tx, ty)
+            || homed(&self.trucks, tx, ty)
+            || homed(&self.tanks, tx, ty)
+            || homed(&self.bunkers, tx, ty)
     }
 
     pub(crate) fn try_spawn_soldier(&mut self, tx: i32, ty: i32) {
         if self.occupied(tx, ty) {
             return;
         }
-        let Some(slot) = self.soldiers.iter_mut().find(|soldier| !soldier.alive) else {
+        let Some(slot) = free_slot(&mut self.soldiers) else {
             return;
         };
         *slot = Soldier {
-            x: (tx * 8 + 4) << 8,
-            y: (ty * 8 + 4) << 8,
+            x: tile_mid(tx),
+            y: tile_mid(ty),
             dir: if hash(tx, ty) & 1 == 0 { 80 } else { -80 },
             step: 0,
             home_tx: tx,
@@ -1014,12 +1013,12 @@ impl super::World {
         if self.occupied(tx, ty) {
             return;
         }
-        let Some(slot) = self.trucks.iter_mut().find(|truck| !truck.alive) else {
+        let Some(slot) = free_slot(&mut self.trucks) else {
             return;
         };
         *slot = Truck {
-            x: (tx * 8 + 4) << 8,
-            y: (ty * 8 + 4) << 8,
+            x: tile_mid(tx),
+            y: tile_mid(ty),
             dir: if hash(tx, ty) & 1 == 0 { 150 } else { -150 },
             vertical,
             home_tx: tx,
@@ -1036,12 +1035,12 @@ impl super::World {
         if self.occupied(tx, ty) {
             return;
         }
-        let Some(slot) = self.tanks.iter_mut().find(|tank| !tank.alive) else {
+        let Some(slot) = free_slot(&mut self.tanks) else {
             return;
         };
         *slot = Tank {
-            x: (tx * 8 + 4) << 8,
-            y: (ty * 8 + 4) << 8,
+            x: tile_mid(tx),
+            y: tile_mid(ty),
             dir: if hash(tx, ty) & 1 == 0 { 120 } else { -120 },
             vertical,
             home_tx: tx,
@@ -1057,12 +1056,12 @@ impl super::World {
         if self.occupied(tx, ty) {
             return;
         }
-        let Some(slot) = self.bunkers.iter_mut().find(|bunker| !bunker.alive) else {
+        let Some(slot) = free_slot(&mut self.bunkers) else {
             return;
         };
         *slot = Bunker {
-            x: (tx * 8 + 4) << 8,
-            y: (ty * 8 + 4) << 8,
+            x: tile_mid(tx),
+            y: tile_mid(ty),
             home_tx: tx,
             home_ty: ty,
             objective: false,
@@ -1092,11 +1091,11 @@ impl super::World {
         } else if seeded == T_ROAD && !self.is_quiet(tx, ty) {
             let lx = tx.rem_euclid(REGION);
             let ly = ty.rem_euclid(REGION);
-            if ly == 0 && lx == 24 && hash(tx, ty) % 2 == 0 {
+            if ly == 0 && lx == 24 && hash(tx, ty).is_multiple_of(2) {
                 self.try_spawn_truck(tx, ty, false);
             } else if lx == 0 && ly == 24 && hash(tx, ty) % 2 == 1 {
                 self.try_spawn_truck(tx, ty, true);
-            } else if ly == 0 && lx == 8 && hash(tx, ty) % 3 == 0 {
+            } else if ly == 0 && lx == 8 && hash(tx, ty).is_multiple_of(3) {
                 self.try_spawn_tank(tx, ty, false);
             } else if lx == 0 && ly == 8 && hash(tx, ty) % 3 == 1 {
                 self.try_spawn_tank(tx, ty, true);
@@ -1105,60 +1104,11 @@ impl super::World {
     }
 
     pub(crate) fn retire_far(&mut self) {
-        let cx = tile_of(self.x);
-        let cy = tile_of(self.y);
-        for soldier in &mut self.soldiers {
-            if !soldier.alive {
-                continue;
-            }
-            let tx = tile_of(soldier.x);
-            let ty = tile_of(soldier.y);
-            if soldier.officer || soldier.objective {
-                continue;
-            }
-            if (tx - cx).abs() > 70 || (ty - cy).abs() > 70 {
-                soldier.alive = false;
-            }
-        }
-        for truck in &mut self.trucks {
-            if !truck.alive {
-                continue;
-            }
-            let tx = tile_of(truck.x);
-            let ty = tile_of(truck.y);
-            if truck.goal || truck.objective {
-                continue;
-            }
-            if (tx - cx).abs() > 70 || (ty - cy).abs() > 70 {
-                truck.alive = false;
-            }
-        }
-        for tank in &mut self.tanks {
-            if !tank.alive {
-                continue;
-            }
-            let tx = tile_of(tank.x);
-            let ty = tile_of(tank.y);
-            if tank.objective {
-                continue;
-            }
-            if (tx - cx).abs() > 70 || (ty - cy).abs() > 70 {
-                tank.alive = false;
-            }
-        }
-        for bunker in &mut self.bunkers {
-            if !bunker.alive {
-                continue;
-            }
-            let tx = tile_of(bunker.x);
-            let ty = tile_of(bunker.y);
-            if bunker.objective {
-                continue;
-            }
-            if (tx - cx).abs() > 70 || (ty - cy).abs() > 70 {
-                bunker.alive = false;
-            }
-        }
+        let home = (tile_of(self.x), tile_of(self.y));
+        retire(&mut self.soldiers, home);
+        retire(&mut self.trucks, home);
+        retire(&mut self.tanks, home);
+        retire(&mut self.bunkers, home);
     }
 
     pub(crate) fn maintain_actors(&mut self) {
@@ -1171,6 +1121,42 @@ impl super::World {
         self.spawn_row = self.spawn_row.wrapping_add(1) % 81;
         for tx in cx - 40..=cx + 40 {
             self.consider_tile(tx, row);
+        }
+    }
+}
+
+/// Write one cell of the 128×128 ground window. The tileset is parked one
+/// slot up, so tile 0 is hardware index 1.
+fn poke_ground(tx: i32, ty: i32, tile: u8) {
+    let hx = tx.rem_euclid(VIEW) as usize;
+    let hy = ty.rem_euclid(VIEW) as usize;
+    unsafe {
+        (0x0600_C000 as *mut u8)
+            .add(hy * 128 + hx)
+            .write_volatile(tile + 1);
+    }
+}
+
+/// Someone of this kind was seated on the tile and is still alive.
+fn homed<T: Unit>(units: &[T], tx: i32, ty: i32) -> bool {
+    units
+        .iter()
+        .any(|unit| unit.alive() && unit.home() == (tx, ty))
+}
+
+fn free_slot<T: Unit>(units: &mut [T]) -> Option<&mut T> {
+    units.iter_mut().find(|unit| !unit.alive())
+}
+
+/// Seventy tiles out, a unit the card does not need is let go.
+fn retire<T: Unit>(units: &mut [T], (cx, cy): (i32, i32)) {
+    for unit in units {
+        if !unit.alive() || unit.kept() {
+            continue;
+        }
+        let (x, y) = unit.at();
+        if (tile_of(x) - cx).abs() > 70 || (tile_of(y) - cy).abs() > 70 {
+            unit.retire();
         }
     }
 }
