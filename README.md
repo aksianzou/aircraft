@@ -12,6 +12,7 @@ Four aircraft. The spotter holds altitude and calls a salvo. The general-purpose
 - Night. The same aircraft, through green glass. Bodies glow, the ground does not.
 - Heat. Cold ground, hot vehicles and bunkers.
 - Guidance. Grey glass, no bombs. A light frame lies on the ground under the sight: it is part of the map and stays put when the camera leaves. B locks it. Four seconds later a salvo of six rockets arrives. The flash is white and only at the impact point. The spotter moves at the same speed as the infantry on a rush, and does not reach the posts before they do.
+- Winter. Cards 26 to 30. White snow, green pines, brown mud. This glass does not switch to night or heat.
 
 In mGBA the d-pad is the cross, X is A, Z is B, Return is Start, and Backspace is Select. On the mine quad, Select turns the glass forward: up climbs, down descends, and left and right turn. Looking down, the cross still slides.
 
@@ -44,6 +45,11 @@ A cleared card keeps three marks. Yellow is earned, red is still open, and a mar
 23. Swarm. Four hostile quads at one height, and two delta-wing drones farther out and lower. Climb and the quads are underneath: the picture grows as they get nearer. The wings are wider, so they stay a shape when a quad has shrunk. Drop onto a height and a close pass is a collision. Only the bullet brings one down. Above you, they are not in the glass. A hit far away is a small flash.
 24. Crows. Six hostile quads come at the pad one after another, and two delta-wing drones come from farther north, slower. You start above them, so they are already in the glass, nearer ones larger. The crosshair has to sit on the picture: that is where the bullet goes. The yellow radar mark is the base. Shoot them down before one reaches the concrete. On their height a close pass is a collision. Only the bullet brings one down. A hit far away is a small flash.
 25. Cover. One truck crawls for the posts. Two quads ride above it. Two delta-wing drones do not hover: they fly a straight lane, north to the posts and back south, and they are already in the glass. You start at the quads' height, so climb before the quads show. The bullet takes only the aircraft. A cycles to the bomb, and the bomb takes the truck. The yellow radar mark is the posts. If the truck reaches them the sortie ends, even with the aircraft already down. On their height a close pass is a collision. A hit far away is a small flash.
+26. Ash pits. Eight men in two trench lines, standing in pairs: one grenade takes a pair. Ash and snow beyond.
+27. Snow wood. Eight men in pairs, on the mud and then in the burned wood. Above 20 the rifles do not see the pass.
+28. Snow road. A truck drives north, and the card fails if it arrives. Only a bomb takes it. Three men stand on the mud beside the road.
+29. Mud iron. Three tanks hold still on three islands to the north. Four men stand together on their own mud well south of the pad, inside one grenade.
+30. Pine post. An officer and four men stand still on the mud. Below 20, inside the post's circle, the guns fire. Above 20 the pass is quiet.
 
 ## Build
 
@@ -51,6 +57,9 @@ Requires the nightly from `rust-toolchain.toml` and the `agb` crate 0.25.
 
 ```sh
 cargo build --release
+agb-gbafix target/thumbv4t-none-eabi/release/aircraft -o aircraft.gba
 ```
 
-The finished ELF is packed into `aircraft.gba`. The image must begin with the bytes `2e 00 00 ea`.
+The ELF is packed into `aircraft.gba` by `agb-gbafix` (`cargo install agb-gbafix`). The image must begin with the bytes `2e 00 00 ea`.
+
+`cargo run --release` opens the ELF in mGBA. `cargo test --release` runs headless in `mgba-test-runner`; `tools/run.sh` picks between the two. The suite flies every card with a stick pilot and draws ten flights through each glass, so it takes several minutes. The flight drawing prints a digest per card and the cycles spent on the floor, the objects and the ground map.

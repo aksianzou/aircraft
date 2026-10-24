@@ -20,4 +20,5 @@ rustdocflags = [
     "-Cforce-frame-pointers=yes",
 ]
 
-runner = ["mgba-qt", "-C", "logToStdout=1", "-C", "logLevel.gba.debug=127"]
+# `cargo run` opens mGBA, `cargo test` runs headless. See the script.
+runner = "tools/run.sh"
