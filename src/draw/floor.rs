@@ -316,8 +316,8 @@ pub(crate) fn find_haze_tile() {
 /// Lines from the edge of the ground to the top of the ramp.
 const HAZE_SPAN: i32 = 96;
 
-/// Lines of ground under the sky that the haze still covers in part.
-const FOG_BAND: i32 = 16;
+/// Lines of fog between the sky and the ground: two of each of its shades.
+const FOG_BAND: i32 = 8;
 
 /// Texels of the ramp that are sky, zenith first. The four after them are
 /// the fog: haze thinned toward the ground's own colour.
@@ -329,13 +329,9 @@ pub(crate) const SKY_STEPS: i32 = 12;
 fn haze_line(haze: (i32, i32), sky_h: i32, scanline: i32) -> FloorLine {
     let up = sky_h - 1 - scanline;
     let top = SKY_STEPS - 1;
-    // In quarter steps. Between two texels the lines take turns, a quarter,
-    // a half or three quarters of them a step higher, so the ramp has no bands.
-    let quarters = (up * top * 4 / HAZE_SPAN).min(top * 4);
-    let mut step = top - quarters / 4;
-    if quarters % 4 > [0, 2, 1, 3][(scanline & 3) as usize] {
-        step -= 1;
-    }
+    // Even steps of one shade each. Lines taking turns between two shades
+    // read as stripes on the glass, and a step this small does not show.
+    let step = top - (up * top / HAZE_SPAN).min(top);
     texel_line(haze, step)
 }
 
@@ -397,14 +393,12 @@ pub(crate) fn build_floor(
                 buf[scanline as usize] = haze_line(haze, sky_h, scanline);
             }
             for scanline in sky_h..HEIGHT {
-                // The far ground thins out of the haze over FOG_BAND lines:
-                // first every line is fog, then three in four, and so on, and
-                // the fog itself turns from haze toward the ground's colour.
-                // The farthest rows are the ones that shimmer as the nose turns.
+                // The farthest ground, the rows that shimmer as the nose turns,
+                // lies under a band of fog: solid lines from the haze down to
+                // nearly the grass's own colour, where the field takes over.
                 let depth = scanline - sky_h;
-                let quarters = (FOG_BAND - depth).max(0) * 4 / FOG_BAND;
-                buf[scanline as usize] = if quarters > [0, 2, 1, 3][(scanline & 3) as usize] {
-                    texel_line(haze, SKY_STEPS + (depth * 4 / FOG_BAND).min(3))
+                buf[scanline as usize] = if depth < FOG_BAND {
+                    texel_line(haze, SKY_STEPS + depth * 4 / FOG_BAND)
                 } else {
                     perspective_line(cam_x, cam_y, alt, sin, cos, scanline, horizon)
                 };

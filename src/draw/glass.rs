@@ -524,9 +524,10 @@ fn paint_haze(sky: u16, sensor: Sensor) {
                 |from: i32, to: i32| (from + (to - from) * mix / (last * last)).clamp(0, 31) as u16;
             blend(top.0, low.0) | (blend(top.1, low.1) << 5) | (blend(top.2, low.2) << 10)
         } else {
-            // A fifth of the way to the ground, then two fifths, and on.
-            let mix = step - SKY_STEPS + 1;
-            let blend = |from: i32, to: i32| (from + (to - from) * mix / 5).clamp(0, 31) as u16;
+            // From a third of the way to the grass to nearly all of it, so
+            // the last fog line meets the field without a seam.
+            let mix = 2 + (step - SKY_STEPS) * 2;
+            let blend = |from: i32, to: i32| (from + (to - from) * mix / 9).clamp(0, 31) as u16;
             blend(low.0, ground.0) | (blend(low.1, ground.1) << 5) | (blend(low.2, ground.2) << 10)
         };
         unsafe {
