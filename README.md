@@ -1,5 +1,9 @@
 # DRONE
 
+![DRONE: the studio card and five sorties](cover.png)
+
+How to play, with pictures of every glass and aircraft: [docs/GUIDE.md](docs/GUIDE.md).
+
 A reconnaissance aircraft for the Game Boy Advance. The cartridge is **`aircraft.gba`**. It opens in the official mGBA.
 
 The field is fictional: grass, dirt tracks, trenches. The sky and the instruments do not repeat the map. The opening card is the title. Credits run after the last mission.
@@ -60,6 +64,12 @@ cargo build --release
 agb-gbafix target/thumbv4t-none-eabi/release/aircraft -o aircraft.gba
 ```
 
+`vendor/agb_image_converter` is agb's image converter with sprite palettes sorted by brightness; upstream shuffles them on every build, and the night, heat and infrared glass read a colour's index as its brightness. See `vendor/README.md`.
+
 The ELF is packed into `aircraft.gba` by `agb-gbafix` (`cargo install agb-gbafix`). The image must begin with the bytes `2e 00 00 ea`.
+
+The trucks, tanks, bunkers and soldiers are voxel models in `tools/voxel.py`, drawn to their sheets from every heading the game uses; `python3 tools/voxel.py` writes them into `gfx/`, and `--preview` puts enlarged copies in `target/voxel/` instead. Every sheet shares one fifteen-colour palette made of colours other sprites already use.
+
+`cargo test --release --features screens` draws the guide's pictures into `target/screens/`; `python3 tools/screens.py` doubles them into `docs/screens/`, and `python3 tools/cover.py` builds `cover.png` from them.
 
 `cargo run --release` opens the ELF in mGBA. `cargo test --release` runs headless in `mgba-test-runner`; `tools/run.sh` picks between the two. The suite flies every card with a stick pilot and draws ten flights through each glass, so it takes several minutes. The flight drawing prints a digest per card and the cycles spent on the floor, the objects and the ground map.
