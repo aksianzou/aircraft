@@ -1,0 +1,22 @@
+[package]
+name = "aircraft"
+version = "0.1.0"
+edition = "2024"
+description = "FPV drone bomber for the Game Boy Advance"
+
+[dependencies]
+agb = "0.25.0"
+
+[profile.dev]
+opt-level = 3
+debug = true
+panic = "abort"
+
+[profile.dev.build-override]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+debug = true
+panic = "abort"
