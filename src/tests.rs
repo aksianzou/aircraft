@@ -82,6 +82,39 @@ fn convoy_has_not_reached_the_mark(_gba: &mut agb::Gba) {
     );
 }
 
+/// A charge on the hatch the sheets draw takes the tank at once, even a
+/// couple of pixels off as a drop from cruise height scatters. The hatch is
+/// back on the turret, and a still tank keeps its facing whatever the camera.
+#[test_case]
+fn hatch_is_where_it_is_drawn(_gba: &mut agb::Gba) {
+    let floor = ground();
+    for (dir, vertical) in [(0, false), (18, false), (-18, true)] {
+        for (dx, dy) in [(0, 0), (2, 2), (-2, 2), (3, -1)] {
+            let mut world = World::preview(floor, 9);
+            world.tanks = [dead_tank(); MAX_TANKS];
+            world.tanks[0] = Tank {
+                x: tile_mid(24),
+                y: tile_mid(60),
+                dir,
+                vertical,
+                home_tx: 24,
+                home_ty: 60,
+                objective: true,
+                hp: HP_TANK,
+                cool: 255,
+                alive: true,
+            };
+            let (hx, hy) = world.tanks[0].hatch();
+            world.explode(floor, hx + (dx << 8), hy + (dy << 8), 10, 0, KIND_MINE);
+            assert!(
+                !world.tanks[0].alive,
+                "dir {dir} vertical {vertical}: a mine {dx},{dy} off the hatch left hp {}",
+                world.tanks[0].hp
+            );
+        }
+    }
+}
+
 /// The house card: blue desk, the condensed title, the roof in the frame.
 #[test_case]
 fn house_briefing(gba: &mut agb::Gba) {

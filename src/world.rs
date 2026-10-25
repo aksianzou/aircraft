@@ -101,8 +101,11 @@ pub(crate) const ARM_BOMB: u8 = 1;
 pub(crate) const ARM_HE: u8 = 2;
 pub(crate) const ARM_MINE: u8 = 3;
 pub(crate) const ARM_VOG: u8 = 4;
-/// World pixels from the turret centre. The hatch is the dark square in the top view.
+/// World pixels from the hatch. The hatch is the dark square on the turret.
 pub(crate) const HATCH: i32 = 6;
+/// The turret sits back on the hull: its hatch is this many world pixels
+/// behind the middle of the tank, where the sheets draw it.
+pub(crate) const HATCH_BACK: i32 = 6;
 /// Beside the hull. Wide enough that a normal bomb drop counts.
 pub(crate) const TANK_NEAR: i32 = 28;
 /// Bombs beside the hull that finish a tank. The hatch is still one shot.
@@ -707,6 +710,28 @@ pub(crate) struct Tank {
     pub(crate) hp: i8,
     pub(crate) cool: u8,
     pub(crate) alive: bool,
+}
+
+impl Tank {
+    /// The way the barrel points, one step along x or y. A tank that does
+    /// not drive still faces one way on the ground, not toward the camera.
+    pub(crate) fn facing(&self) -> (i32, i32) {
+        let along = if self.dir < 0 { -1 } else { 1 };
+        if self.vertical {
+            (0, along)
+        } else {
+            (along, 0)
+        }
+    }
+
+    /// The middle of the hatch, in sub-pixels.
+    pub(crate) fn hatch(&self) -> (i32, i32) {
+        let (fx, fy) = self.facing();
+        (
+            self.x - fx * (HATCH_BACK << 8),
+            self.y - fy * (HATCH_BACK << 8),
+        )
+    }
 }
 
 #[derive(Clone, Copy)]

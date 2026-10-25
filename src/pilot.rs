@@ -339,7 +339,8 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     let close = if chasing {
         dist <= slop * slop
     } else if hatch {
-        hatch_window && body <= if world.hover { 80 * 80 } else { 48 * 48 }
+        // Fly up to the hatch, then sit: a long slide under the barrel is shot at.
+        hatch_window && body <= if world.hover { 80 * 80 } else { 20 * 20 }
     } else if world.hover {
         here <= stay * stay
     } else {
@@ -799,7 +800,9 @@ fn nearest(world: &World) -> Option<Aim> {
         if tank.alive && tank.objective && armor_counts(task) {
             let step = ground_step(tank.dir);
             let (vx, vy) = if tank.vertical { (0, step) } else { (step, 0) };
-            keep(&mut best, world, tank.x, tank.y, vx, vy, TANK);
+            // The charge goes in the hatch, back on the turret.
+            let (hx, hy) = tank.hatch();
+            keep(&mut best, world, hx, hy, vx, vy, TANK);
         }
     }
     for bunker in &world.bunkers {

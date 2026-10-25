@@ -1143,7 +1143,8 @@ impl super::World {
                 continue;
             }
             let dist = dist2_px(tank.x, tank.y, x, y);
-            let hatch = dist <= HATCH * HATCH;
+            let (hx, hy) = tank.hatch();
+            let hatch = dist2_px(hx, hy, x, y) <= HATCH * HATCH;
             let hits = hull_hits(kind);
             let near = hits > 0 && dist <= TANK_NEAR * TANK_NEAR;
             if !hatch && !near {

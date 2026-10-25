@@ -501,11 +501,7 @@ pub(crate) fn show_tank(
         ..
     } = *eye;
     let scale = body_scale(sy, horizon, alt, 12, 14);
-    let (fx, fy) = if tank.vertical {
-        (0, tank.dir.signum())
-    } else {
-        (tank.dir.signum(), 0)
-    };
+    let (fx, fy) = tank.facing();
     let fwd = fx * sin_r - fy * cos_r;
     let right = fx * cos_r + fy * sin_r;
     let oct = heading_octant(fwd, right);
