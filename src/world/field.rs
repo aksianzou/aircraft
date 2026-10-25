@@ -286,6 +286,11 @@ impl super::World {
                         hp: HP_TRUCK,
                         cool: 30,
                         alive: true,
+                        turn: 0,
+                        turn_len: 0,
+                        lane: 1,
+                        pivot_x: 0,
+                        pivot_y: 0,
                     };
                 }
             }
@@ -304,6 +309,11 @@ impl super::World {
                     hp: HP_TRUCK,
                     cool: 20,
                     alive: true,
+                    turn: 0,
+                    turn_len: 0,
+                    lane: 1,
+                    pivot_x: 0,
+                    pivot_y: 0,
                 };
             }
             Task::Convoy => {
@@ -321,6 +331,11 @@ impl super::World {
                     hp: HP_TRUCK,
                     cool: 20,
                     alive: true,
+                    turn: 0,
+                    turn_len: 0,
+                    lane: 1,
+                    pivot_x: 0,
+                    pivot_y: 0,
                 };
             }
             Task::Guide | Task::Column => {
@@ -340,6 +355,11 @@ impl super::World {
                         hp: HP_TRUCK,
                         cool: 30,
                         alive: true,
+                        turn: 0,
+                        turn_len: 0,
+                        lane: 1,
+                        pivot_x: 0,
+                        pivot_y: 0,
                     };
                 }
             }
@@ -411,6 +431,11 @@ impl super::World {
                         hp: HP_TRUCK,
                         cool: 30,
                         alive: true,
+                        turn: 0,
+                        turn_len: 0,
+                        lane: 1,
+                        pivot_x: 0,
+                        pivot_y: 0,
                     };
                 }
                 for (index, (tx, ty)) in men.into_iter().enumerate() {
@@ -469,6 +494,11 @@ impl super::World {
                         hp: HP_TRUCK,
                         cool: 30,
                         alive: true,
+                        turn: 0,
+                        turn_len: 0,
+                        lane: 1,
+                        pivot_x: 0,
+                        pivot_y: 0,
                     };
                 }
             }
@@ -590,6 +620,11 @@ impl super::World {
                     hp: HP_TRUCK,
                     cool: 20,
                     alive: true,
+                    turn: 0,
+                    turn_len: 0,
+                    lane: 1,
+                    pivot_x: 0,
+                    pivot_y: 0,
                 };
                 // Beside the road the truck is on, not a second sortie.
                 // Two share a grenade. The third is the miss you can afford.
@@ -1044,6 +1079,11 @@ impl super::World {
             hp: HP_TRUCK,
             cool: 40,
             alive: true,
+            turn: 0,
+            turn_len: 0,
+            lane: 1,
+            pivot_x: 0,
+            pivot_y: 0,
         };
     }
 

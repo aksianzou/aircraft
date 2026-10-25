@@ -129,7 +129,8 @@ pub(crate) const HP_BUNKER: i8 = 28;
 
 pub(crate) const MAX_SHOTS: usize = 12;
 pub(crate) const MAX_MINES: usize = 8;
-pub(crate) const MAX_BOOMS: usize = 6;
+/// A blast lives on as smoke, so a few more than are ever on fire at once.
+pub(crate) const MAX_BOOMS: usize = 10;
 pub(crate) const MAX_BURNS: usize = 6;
 pub(crate) const MAX_TRUCKS: usize = 4;
 pub(crate) const MAX_TANKS: usize = 3;
@@ -345,7 +346,9 @@ pub(crate) fn time_budget(level: u8) -> i32 {
 fn approach_frames(level: u8) -> i32 {
     match task_of(level) {
         Task::Trench | Task::Officer | Task::Hq | Task::Pill => 150,
-        Task::Night | Task::Grove | Task::Hearth => 100,
+        Task::Grove | Task::Hearth => 100,
+        // The row loops at each end of its run, and that takes a while.
+        Task::Night => 700,
         Task::Heat => 50,
         Task::Pits => 80,
         Task::Armor => 220,
@@ -537,6 +540,91 @@ pub(crate) struct Truck {
     pub(crate) hp: i8,
     pub(crate) cool: u8,
     pub(crate) alive: bool,
+    /// Frames into a U-turn, 0 while it drives. The rig loops out into the
+    /// other lane and back instead of swapping its nose and tail.
+    pub(crate) turn: u8,
+    pub(crate) turn_len: u8,
+    /// The side of the road the next U-turn swings to: 1 or -1.
+    pub(crate) lane: i8,
+    /// Where the U-turn began, in sub-pixels.
+    pub(crate) pivot_x: i32,
+    pub(crate) pivot_y: i32,
+}
+
+/// Radius of a truck's U-turn: half a lane.
+pub(crate) const TURN_RADIUS: i32 = 6 << 8;
+
+impl Truck {
+    /// Along the road, the way the nose points: x, y in 1/256.
+    fn road(&self) -> (i32, i32) {
+        let along = self.dir.signum() * 256;
+        if self.vertical {
+            (0, along)
+        } else {
+            (along, 0)
+        }
+    }
+
+    /// Across the road, toward the side the U-turn swings out to.
+    fn across(&self) -> (i32, i32) {
+        let side = i32::from(self.lane) * 256;
+        if self.vertical { (side, 0) } else { (0, side) }
+    }
+
+    /// The loop as (out, ahead, heading out, heading ahead), each in 1/256
+    /// of a radius or of a unit: a quarter turn out, then three quarters
+    /// back the other way, which ends two radii on facing back down the lane.
+    fn bend(&self) -> (i32, i32, i32, i32) {
+        let len = i32::from(self.turn_len).max(1);
+        let t = i32::from(self.turn);
+        let quarter = len / 4;
+        if t <= quarter {
+            let a = Num::<i32, 8>::new(t) / Num::new(quarter.max(1) * 4);
+            let (cos, sin) = (a.cos().to_raw(), a.sin().to_raw());
+            (256 - cos, sin, sin, cos)
+        } else {
+            let b = Num::<i32, 8>::new(t - quarter) / Num::new((len - quarter).max(1) * 4 / 3);
+            let (cos, sin) = (b.cos().to_raw(), b.sin().to_raw());
+            (256 + sin, 512 - cos, cos, sin)
+        }
+    }
+
+    /// Where the nose points, in 1/256: along the road, or round the loop.
+    pub(crate) fn facing(&self) -> (i32, i32) {
+        let (dx, dy) = self.road();
+        if self.turn == 0 {
+            return (dx, dy);
+        }
+        let (nx, ny) = self.across();
+        let (_, _, out, ahead) = self.bend();
+        ((dx * ahead + nx * out) >> 8, (dy * ahead + ny * out) >> 8)
+    }
+
+    /// Start a U-turn from where it stands, at `speed` sub-pixels a frame.
+    pub(crate) fn start_turn(&mut self, speed: i32) {
+        self.pivot_x = self.x;
+        self.pivot_y = self.y;
+        // A whole circle's length at the truck's own pace.
+        self.turn_len = (TURN_RADIUS * 1608 / 256 / speed.abs().max(1)).clamp(16, 250) as u8;
+        self.turn = 1;
+    }
+
+    /// One frame round the loop. At the end it faces back down its lane.
+    pub(crate) fn step_turn(&mut self) {
+        let (dx, dy) = self.road();
+        let (nx, ny) = self.across();
+        let (out, ahead, _, _) = self.bend();
+        let r = TURN_RADIUS >> 8;
+        self.x = self.pivot_x + ((dx * ahead + nx * out) >> 8) * r;
+        self.y = self.pivot_y + ((dy * ahead + ny * out) >> 8) * r;
+        if self.turn >= self.turn_len {
+            self.dir = -self.dir;
+            self.lane = -self.lane;
+            self.turn = 0;
+        } else {
+            self.turn += 1;
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1281,6 +1369,11 @@ pub(crate) fn dead_truck() -> Truck {
         hp: 0,
         cool: 0,
         alive: false,
+        turn: 0,
+        turn_len: 0,
+        lane: 1,
+        pivot_x: 0,
+        pivot_y: 0,
     }
 }
 

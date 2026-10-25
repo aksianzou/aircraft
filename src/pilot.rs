@@ -918,7 +918,34 @@ fn truck_vel(world: &World, truck: &Truck) -> (i32, i32) {
     }
     let guide = world.mode == Mode::Guide;
     let step = drive_step(guide, truck.dir);
-    if truck.vertical { (0, step) } else { (step, 0) }
+    if truck.goal || step == 0 {
+        return if truck.vertical { (0, step) } else { (step, 0) };
+    }
+    // A patrol turns at the end of its run and loops back: play a copy of it
+    // forward by the same rules and aim along the way it really goes.
+    const AHEAD: i32 = 48;
+    let mut copy = *truck;
+    for _ in 0..AHEAD {
+        if copy.turn > 0 {
+            copy.step_turn();
+            continue;
+        }
+        let pace = drive_step(guide, copy.dir);
+        if copy.vertical {
+            copy.y += pace;
+        } else {
+            copy.x += pace;
+        }
+        let (here, home) = if copy.vertical {
+            (copy.y >> 8, copy.home_ty * 8 + 4)
+        } else {
+            (copy.x >> 8, copy.home_tx * 8 + 4)
+        };
+        if (here - home) * copy.dir.signum() > 48 {
+            copy.start_turn(pace);
+        }
+    }
+    ((copy.x - truck.x) / AHEAD, (copy.y - truck.y) / AHEAD)
 }
 
 fn arm_for(world: &World, kind: u8) -> u8 {
@@ -966,7 +993,9 @@ fn will_turn(world: &World, aim: &Aim, fall: i32) -> bool {
     else {
         return false;
     };
-    if truck.goal || truck.dir == 0 {
+    // Already in the bend, or the bomb will land while it swings there:
+    // either way it stays close to where it is.
+    if truck.goal || truck.dir == 0 || truck.turn > 0 {
         return false;
     }
     let home = if truck.vertical {

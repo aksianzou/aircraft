@@ -24,6 +24,8 @@ pub(crate) struct Eye {
     pub(crate) sin_r: i32,
     pub(crate) cos_r: i32,
     pub(crate) horizon: i32,
+    /// The sortie's frame count, for whatever moves by the clock.
+    pub(crate) age: i32,
 }
 
 impl Eye {
@@ -38,6 +40,7 @@ impl Eye {
             sin_r,
             cos_r,
             horizon,
+            age: world.age,
         }
     }
 
@@ -346,7 +349,10 @@ pub(crate) fn show_soldier(
         (soldier.dir.signum(), 0)
     };
     let frame_index = projection(pitch, fx, fy, sin_r, cos_r);
+    // A man on the move steps on every other bob: the stride cells follow
+    // the standing ones in both sheets.
     let bob = ((soldier.step / 8) & 1) as i32;
+    let stride = bob == 1;
     let sy = sy - bob;
     // Straight down, the plan sheet: a helmet, shoulders and the rifle. A
     // close pass uses the tall figure, with a roof plane and a shadow side,
@@ -369,7 +375,7 @@ pub(crate) fn show_soldier(
     } else if scale.near && frame_index < 8 {
         show_figure(
             frame,
-            sprites::SOLDIER_NEAR.sprite(four_view(frame_index)),
+            sprites::SOLDIER_NEAR.sprite(four_view(frame_index) + if stride { 4 } else { 0 }),
             (sx, sy),
             Art {
                 w: 32,
@@ -384,7 +390,11 @@ pub(crate) fn show_soldier(
     } else {
         show_figure(
             frame,
-            sprites::SOLDIER.sprite(frame_index),
+            sprites::SOLDIER.sprite(if stride && frame_index < 8 {
+                17 + frame_index
+            } else {
+                frame_index
+            }),
             (sx, sy),
             Art {
                 w: 32,
@@ -418,11 +428,8 @@ pub(crate) fn show_truck(
         ..
     } = *eye;
     let scale = body_scale(sy, horizon, alt, 12, 14);
-    let (fx, fy) = if truck.vertical {
-        (0, truck.dir.signum())
-    } else {
-        (truck.dir.signum(), 0)
-    };
+    // Round the bend the nose swings through the diagonal frames.
+    let (fx, fy) = truck.facing();
     // Level flight keeps the flat front, side and rear. A three-quarter frame
     // puts the cab up the screen and the truck looks reared. A dive uses the
     // flatter row, the same way a man does. Looking straight down, the plan
@@ -464,6 +471,16 @@ pub(crate) fn show_truck(
         sensor,
         8,
     );
+    if !wreck && (truck.dir != 0 || truck.turn > 0) {
+        show_dust(
+            frame,
+            eye,
+            (truck.x, truck.y),
+            truck.facing(),
+            scale.span,
+            sensor,
+        );
+    }
 }
 
 pub(crate) fn show_tank(
@@ -524,6 +541,15 @@ pub(crate) fn show_tank(
         sensor,
         8,
     );
+    if !wreck && tank.dir != 0 {
+        let along = tank.dir.signum() * 256;
+        let facing = if tank.vertical {
+            (0, along)
+        } else {
+            (along, 0)
+        };
+        show_dust(frame, eye, (tank.x, tank.y), facing, scale.span, sensor);
+    }
 }
 
 pub(crate) fn show_bunker(
@@ -650,6 +676,49 @@ pub(crate) fn show_life(
     }
 }
 
+/// Frames of fire before a blast turns to smoke.
+const FIRE: i16 = 24;
+
+/// Road dust behind a vehicle that is moving. Nothing is kept: the puff sits
+/// past the tail, and its frame comes from the clock. Only the daylight
+/// glass sees dust, and only looking ahead: from overhead it is a smudge.
+fn show_dust(
+    frame: &mut agb::display::GraphicsFrame,
+    eye: &Eye,
+    (x, y): (i32, i32),
+    (fx, fy): (i32, i32),
+    span: i32,
+    sensor: Sensor,
+) {
+    if !matches!(sensor, Sensor::Day | Sensor::Winter) || nadir_on() > 0 {
+        return;
+    }
+    let Some((sx, sy)) = eye.project(x - fx * 14, y - fy * 14, 0) else {
+        return;
+    };
+    if !(VIEW_X..VIEW_X + VIEW_W).contains(&sx) {
+        return;
+    }
+    let puff = ((eye.age / 6) % 3) as usize;
+    let pixels = (span * 3 / 4).clamp(6, 32);
+    let double = pixels > 16;
+    let mode = if double {
+        AffineMode::AffineDouble
+    } else {
+        AffineMode::Affine
+    };
+    let half = if double { 16 } else { 8 };
+    let inv = Num::<i32, 8>::new(16) / Num::new(pixels);
+    ObjectAffine::new(
+        vram(sprites::DUST.sprite(puff)),
+        scale_matrix(inv, inv),
+        mode,
+    )
+    .set_pos((sx - half, sy - half - pixels / 4))
+    .set_priority(Priority::P0)
+    .show(frame);
+}
+
 pub(crate) fn draw_world(
     frame: &mut agb::display::GraphicsFrame,
     world: &World,
@@ -701,6 +770,21 @@ pub(crate) fn draw_world(
             if boom.frame < 16 {
                 show_spark(frame, sx, sy, cockpit);
             }
+        } else if (sy >= floor || airborne || guide_hit) && boom.frame >= FIRE {
+            // The fire is out: its smoke climbs and spreads.
+            let after = i32::from(boom.frame - FIRE);
+            let (start, most) = if dist2 < 40 * 40 { (24, 48) } else { (12, 24) };
+            let pixels = (start + after / 3).min(most);
+            let sheet = if after < 30 { 1 } else { 2 };
+            show_marked(
+                frame,
+                sprites::SMOKE.sprite(sheet),
+                32,
+                sx,
+                sy - 4 - after / 3,
+                pixels,
+                Tone::Ash,
+            );
         } else if sy >= floor || airborne || guide_hit {
             // The fire is the blast. A near one also washes the ground, including through night glass.
             if boom.frame < 8 {
@@ -997,6 +1081,11 @@ fn draw_husks(
                     hp: 0,
                     cool: 0,
                     alive: true,
+                    turn: 0,
+                    turn_len: 0,
+                    lane: 1,
+                    pivot_x: 0,
+                    pivot_y: 0,
                 };
                 show_truck(frame, &truck, sx, sy, eye, sensor, true);
             }

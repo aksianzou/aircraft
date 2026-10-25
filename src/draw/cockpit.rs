@@ -644,16 +644,8 @@ pub(crate) fn draw_hud(frame: &mut agb::display::GraphicsFrame, world: &World, b
         let secs = ((world.guide as i32) + 59) / 60;
         draw_readout(frame, secs, 1, VIEW_X + VIEW_W / 2 - 4, VIEW_Y + 6, blind);
     }
-    if world.mode != Mode::Fpv && world.mode != Mode::Guide {
-        show(frame, sprites::LBL_BOMB.sprite(0), 0, 8);
-        draw_readout(frame, world.bombs, 2, 32, 8, blind);
-        show(frame, sprites::LBL_HE.sprite(0), 56, 8);
-        draw_readout(frame, world.he, 2, 88, 8, blind);
-        show(frame, sprites::LBL_MINE.sprite(0), 112, 8);
-        draw_readout(frame, world.mines, 2, 144, 8, blind);
-        show(frame, sprites::LBL_VOG.sprite(0), 168, 8);
-        draw_readout(frame, world.vog, 2, 200, 8, blind);
-    }
+    // The charge in hand and what is left of it sit in the left column.
+    // The rest show as A cycles to them, so the top stays one quiet line.
     if world.mode == Mode::Fpv {
         show(frame, sprites::LBL_DRONE.sprite(0), 160, 0);
         draw_readout(frame, world.drones, 1, 176, 0, blind);

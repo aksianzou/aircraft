@@ -791,6 +791,31 @@ impl super::World {
         }
     }
 
+    /// Another vehicle in the way: within `reach` pixels ahead along
+    /// `(fx, fy)`, and within a lane of the line. `me` is the asker, as
+    /// (is a truck, index), so it does not stop for itself. A truck going the
+    /// same way at the same pace is a column, not an obstacle.
+    fn blocked(&self, me: (bool, usize), x: i32, y: i32, (fx, fy): (i32, i32), reach: i32) -> bool {
+        let ahead = |ox: i32, oy: i32| {
+            let dx = delta(ox, x) >> 8;
+            let dy = delta(oy, y) >> 8;
+            let along = (dx * fx + dy * fy) >> 8;
+            let side = (dx * fy - dy * fx) >> 8;
+            along > 0 && along < reach && side.abs() < 10
+        };
+        let trucks = self.trucks.iter().enumerate().any(|(i, rig)| {
+            let (ox, oy) = rig.facing();
+            let column = rig.turn == 0 && rig.dir != 0 && (ox * fx + oy * fy) > 0;
+            rig.alive && me != (true, i) && !column && ahead(rig.x, rig.y)
+        });
+        let tanks = self
+            .tanks
+            .iter()
+            .enumerate()
+            .any(|(i, rig)| rig.alive && me != (false, i) && ahead(rig.x, rig.y));
+        trucks || tanks
+    }
+
     pub(crate) fn update_trucks(&mut self) {
         let guide = self.mode == Mode::Guide;
         for index in 0..MAX_TRUCKS {
@@ -803,33 +828,50 @@ impl super::World {
                 self.trucks[index].y -= rush_step(self.level);
                 continue;
             }
+            if self.trucks[index].turn > 0 {
+                self.trucks[index].step_turn();
+                continue;
+            }
             let dir = self.trucks[index].dir;
             let step = drive_step(guide, dir);
             if step == 0 {
                 continue;
             }
-            if self.trucks[index].vertical {
+            // A goal truck has a long run north on its card's clock. The
+            // others give way to it; it does not turn around.
+            if self.trucks[index].goal {
+                if self.trucks[index].vertical {
+                    self.trucks[index].y += step;
+                } else {
+                    self.trucks[index].x += step;
+                }
+                continue;
+            }
+            let rig = self.trucks[index];
+            // Something parked across the road ahead: turn back short of it.
+            if self.blocked((true, index), rig.x, rig.y, rig.facing(), 30) {
+                self.trucks[index].start_turn(step);
+                continue;
+            }
+            if rig.vertical {
                 self.trucks[index].y += step;
             } else {
                 self.trucks[index].x += step;
             }
-            // A goal truck has a long run north. It does not turn around.
-            if self.trucks[index].goal {
-                continue;
-            }
-            let home = if self.trucks[index].vertical {
-                self.trucks[index].home_ty * 8 + 4
+            let home = if rig.vertical {
+                rig.home_ty * 8 + 4
             } else {
-                self.trucks[index].home_tx * 8 + 4
+                rig.home_tx * 8 + 4
             };
-            let here = if self.trucks[index].vertical {
+            let here = if rig.vertical {
                 self.trucks[index].y >> 8
             } else {
                 self.trucks[index].x >> 8
             };
-            // Six tiles either side of where it started, so the lead stays in view.
-            if (here - home).abs() > 48 {
-                self.trucks[index].dir = -self.trucks[index].dir;
+            // Six tiles either side of where it started, so the lead stays in
+            // view. Past that it comes round, already headed back.
+            if (here - home) * dir.signum() > 48 {
+                self.trucks[index].start_turn(step);
             }
         }
     }
@@ -839,8 +881,16 @@ impl super::World {
             if !self.tanks[index].alive {
                 continue;
             }
-            let step = ground_step(self.tanks[index].dir);
-            if self.tanks[index].vertical {
+            let rig = self.tanks[index];
+            let along = rig.dir.signum() * 256;
+            let facing = if rig.vertical { (0, along) } else { (along, 0) };
+            // A tank backs off rather than drive through another vehicle.
+            if rig.dir != 0 && self.blocked((false, index), rig.x, rig.y, facing, 30) {
+                self.tanks[index].dir = -rig.dir;
+                continue;
+            }
+            let step = ground_step(rig.dir);
+            if rig.vertical {
                 self.tanks[index].y += step;
             } else {
                 self.tanks[index].x += step;
@@ -896,7 +946,13 @@ impl super::World {
                 continue;
             }
             boom.frame += 1;
-            if boom.frame > 40 {
+            // A bomb or a shell burns, then its smoke climbs a while.
+            let life = if boom.radius > 4 && !boom.plume {
+                96
+            } else {
+                40
+            };
+            if boom.frame > life {
                 boom.alive = false;
             }
         }

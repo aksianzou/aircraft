@@ -352,13 +352,17 @@ BOOT = Material(OLIVE_DEEP, "181810", "181810")
 GUN = Material(STEEL[2], OLIVE_DEEP, "181810")
 
 
-def soldier():
+def soldier(stride=False):
+    """`stride` is mid-step: the left leg forward, the right one back, the
+    arms swinging the other way."""
     m = Model(8, 6, 19)
-    m.box(1, 1, 0, 3, 4, 1, BOOT).box(5, 1, 0, 7, 4, 1, BOOT)
-    m.box(1, 1, 1, 3, 3, 7, TROUSER).box(5, 1, 1, 7, 3, 7, TROUSER)
+    left, right = (3, -1) if stride else (1, 1)
+    m.box(1, left, 0, 3, left + 3, 1, BOOT).box(5, right, 0, 7, right + 3, 1, BOOT)
+    m.box(1, left, 1, 3, left + 2, 7, TROUSER).box(5, right, 1, 7, right + 2, 7, TROUSER)
     m.box(1, 0, 7, 7, 4, 13, CLOTH)  # jacket
     m.paint(1, 0, 7, 7, 4, 8, BOOT)  # belt
-    m.box(0, 1, 8, 1, 3, 13, CLOTH).box(7, 1, 8, 8, 3, 13, CLOTH)  # arms
+    arm_l, arm_r = (-1, 3) if stride else (1, 1)
+    m.box(0, arm_l, 8, 1, arm_l + 2, 13, CLOTH).box(7, arm_r, 8, 8, arm_r + 2, 13, CLOTH)  # arms
     m.box(2, 1, 13, 6, 4, 16, SKIN)  # head
     m.box(2, 0, 15, 6, 5, 17, CLOTH)  # helmet, its brim to the front
     m.box(2, 1, 17, 6, 4, 18, CLOTH)
@@ -400,16 +404,19 @@ SHEETS = {
     "soldier_top": (soldier, (32, 32), TOP, 1.0, 16),
 }
 
-# Sheets with one more cell after the others: (model, octant, elevation).
-TAILS = {"soldier": (fallen, 1, DIVE)}
+# Cells after the sheet's own: [(model, octant, elevation)]. The soldier's
+# are the body on the ground, then mid-step at each level heading.
+TAILS = {
+    "soldier": [(fallen, 1, DIVE)] + [(lambda: soldier(True), o, LEVEL) for o in range(8)],
+    "soldier_near": [(lambda: soldier(True), o, LEVEL) for o in (0, 2, 4, 6)],
+}
 
 
 def build(name):
     make, cell, frames, scale, foot = SHEETS[name]
     model = make()
     out = [render(model, OCTANT_YAW[o], e, scale, cell, foot, RIM) for o, e in frames]
-    if name in TAILS:
-        tail, octant, elevation = TAILS[name]
+    for tail, octant, elevation in TAILS.get(name, []):
         out.append(render(tail(), OCTANT_YAW[octant], elevation, scale, cell, foot, RIM))
     return out
 
@@ -422,6 +429,90 @@ def metrics(frames):
         cols = [x for x in range(len(f[0])) if any(row[x] is not None for row in f)]
         out.append((bottom - top + 1, cols[-1] - cols[0] + 1 if cols else 0, bottom))
     return out
+
+
+def dust():
+    """Road dust behind a moving vehicle: three 16x16 puffs, each wider and
+    thinner than the last. The edge is a checker, so the puff reads as air."""
+    tones = [hexcolour("d8c8c0"), hexcolour("b8b090"), hexcolour("a08040")]
+    frames = []
+    for radius, solid in ((4.0, 2.5), (5.5, 3.0), (7.0, 3.0)):
+        cell = [[None] * 16 for _ in range(16)]
+        for y in range(16):
+            for x in range(16):
+                d = math.hypot(x + 0.5 - 8, (y + 0.5 - 8) * 1.4)
+                if d > radius or (d > solid and (x + y) % 2):
+                    continue
+                shade = 0 if y < 7 else (1 if y < 10 else 2)
+                cell[y][x] = tones[shade]
+        frames.append(cell)
+    return frames
+
+
+PROP = Material("706060", "706060", "383020")
+LENS = Material("a8c8c8", "506868", "202020")
+LED = Material("f8d020", "f8d020", "a08040")
+
+
+def quad():
+    """The game's own quadcopter, with a bomb under it, for the studio card."""
+    m = Model(40, 40, 15)
+    m.box(13, 12, 5, 27, 28, 10, PAINT)  # body
+    m.box(14, 13, 10, 26, 27, 11, PAINT)  # its lid
+    m.paint(17, 27, 8, 23, 28, 9, LED)  # nose light
+    m.box(17, 27, 3, 23, 30, 6, UNDER).paint(19, 29, 4, 21, 30, 5, LENS)  # camera
+    for index, (cx, cy) in enumerate(((8, 8), (32, 8), (8, 32), (32, 32))):
+        for t in range(0, 21):
+            x = round(20 + (cx - 20) * t / 20)
+            y = round(20 + (cy - 20) * t / 20)
+            m.box(x - 1, y - 1, 8, x + 1, y + 1, 9, UNDER)  # arm
+        m.box(cx - 2, cy - 2, 7, cx + 2, cy + 2, 11, UNDER)  # motor
+        # Two blades caught mid-turn, each motor at its own angle.
+        angle = math.radians(20 + 50 * index)
+        for step in range(-14, 15):
+            x = round(cx + step / 2 * math.cos(angle))
+            y = round(cy + step / 2 * math.sin(angle))
+            m.cells[(x, y, 11)] = PROP
+        lx = cx + (3 if cx < 20 else -3)
+        ly = cy + (3 if cy < 20 else -3)
+        m.box(lx, ly, 2, lx + 1, ly + 1, 7, UNDER)  # leg
+    m.box(17, 15, 1, 23, 25, 5, TRACK)  # the bomb
+    m.box(19, 12, 2, 21, 15, 4, UNDER)  # its fins
+    return m
+
+
+SKY_BANDS = ["7090a8", "98b0c0", "a0b0c0", "a8c0d8", "b8d0d8"]
+FIELD = ["486030", "383020", "705830"]
+
+
+def title():
+    """256x192, cut into twelve 64x64 cells, read across and then down."""
+    width, height, horizon = 256, 192, 116
+    rows = []
+    for y in range(height):
+        row = []
+        for x in range(width):
+            if y < horizon:
+                # Bands down the sky, each blending into the next on a checker.
+                pos = y * (len(SKY_BANDS) - 1) / horizon
+                band = int(pos)
+                mix = pos - band
+                pick = band + (1 if (x + y) % 2 and mix > 0.5 else 0)
+                row.append(hexcolour(SKY_BANDS[min(pick, len(SKY_BANDS) - 1)]))
+            else:
+                # Long furrows across the field, closer together at the horizon.
+                depth = y - horizon
+                tone = FIELD[0]
+                if depth % (3 + depth // 12) == 0 and (x + depth * 7) % 23 < 15:
+                    tone = FIELD[1]
+                row.append(hexcolour(tone))
+        rows.append(row)
+    hero = render(quad(), 35, 25, 4.6, (width, height), 132, RIM)
+    for y in range(height):
+        for x in range(width):
+            if hero[y][x] is not None:
+                rows[y][x] = hero[y][x]
+    return rows
 
 
 def main():
@@ -437,6 +528,18 @@ def main():
             preview(target / f"{name}.png", rows)
         else:
             write_png(GFX / f"{name}.png", rows)
+    rows = sheet(dust())
+    if look:
+        preview(target / "dust.png", rows)
+    else:
+        write_png(GFX / "dust.png", rows)
+    rows = title()
+    colours = {p for row in rows for p in row}
+    print(f"title: {len(colours)} colours")
+    if look:
+        preview(target / "title.png", rows, 2)
+    else:
+        write_png(GFX / "title.png", rows)
 
 
 if __name__ == "__main__":

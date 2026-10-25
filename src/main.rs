@@ -34,6 +34,7 @@ include_aseprite!(
     16x16 "gfx/boom.png",
     16x16 "gfx/scrap.png",
     32x32 "gfx/smoke.png",
+    16x16 "gfx/dust.png",
     32x32 "gfx/truck.png",
     64x32 "gfx/truck_near.png",
     32x32 "gfx/tank.png",

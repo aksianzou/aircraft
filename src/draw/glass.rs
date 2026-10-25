@@ -477,6 +477,9 @@ pub(crate) fn glass_now() -> Sensor {
     unsafe { sensor_from((*LOOK.0.get()).sensor) }
 }
 
+/// The field's middle green, before any glass.
+const GRASS: u16 = 8 | (12 << 5) | (5 << 10);
+
 /// Paint the ramp again at the next vblank. A new sheet may sit in another slot.
 pub(crate) fn repaint_haze() {
     unsafe { (*LOOK.0.get()).sky_applied = 0xFFFF };
@@ -503,11 +506,29 @@ fn paint_haze(sky: u16, sensor: Sensor) {
         g + (glow.1 - g) * 2 / 5,
         b + (glow.2 - b) * 2 / 5,
     );
+    // The fog leans toward the grass as this glass shows it.
+    let grass = match sensor {
+        Sensor::Night => nvg_ground(GRASS),
+        Sensor::Heat => cold_ground(GRASS),
+        Sensor::Ir => ir_ground(GRASS),
+        Sensor::Winter => winter_ground(GRASS),
+        Sensor::Day => GRASS,
+    };
+    let ground = channels(grass);
+    let last = SKY_STEPS - 1;
     for step in 0..16 {
-        // Most of the change sits near the ground, the way haze thickens.
-        let mix = step * step;
-        let blend = |from: i32, to: i32| (from + (to - from) * mix / 225).clamp(0, 31) as u16;
-        let colour = blend(top.0, low.0) | (blend(top.1, low.1) << 5) | (blend(top.2, low.2) << 10);
+        let colour = if step < SKY_STEPS {
+            // Most of the change sits near the ground, the way haze thickens.
+            let mix = step * step;
+            let blend =
+                |from: i32, to: i32| (from + (to - from) * mix / (last * last)).clamp(0, 31) as u16;
+            blend(top.0, low.0) | (blend(top.1, low.1) << 5) | (blend(top.2, low.2) << 10)
+        } else {
+            // A fifth of the way to the ground, then two fifths, and on.
+            let mix = step - SKY_STEPS + 1;
+            let blend = |from: i32, to: i32| (from + (to - from) * mix / 5).clamp(0, 31) as u16;
+            blend(low.0, ground.0) | (blend(low.1, ground.1) << 5) | (blend(low.2, ground.2) << 10)
+        };
         unsafe {
             let entry = ((0x0600_0000 + usize::from(tile) * 64 + step as usize) as *const u8)
                 .read_volatile();
