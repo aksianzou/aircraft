@@ -209,14 +209,14 @@ impl super::World {
     /// Under `AA_HIDE` a battery sees the drone inside its circle. At that
     /// height and above, the drone is gone and the guns do not fire.
     pub(crate) fn aa_tick(&mut self) {
-        let guns = aa_guns(task_of(self.level));
+        let guns = aa_guns(self.level);
         if guns.is_empty() || self.recover > 0 {
             return;
         }
         if !guns_see(self.alt >> 8) {
             return;
         }
-        if !aa_covers(guns, self.x, self.y) {
+        if !self.guns_cover(self.x, self.y) {
             return;
         }
         let heat = heat(self.level);
@@ -233,6 +233,9 @@ impl super::World {
             let mut best = 0;
             let mut best_d = i32::MAX;
             for (index, gun) in guns.iter().enumerate() {
+                if !self.gun_up(index) {
+                    continue;
+                }
                 let (gx, gy) = gun_at(gun);
                 let distance = dist2_px(self.x, self.y, gx, gy);
                 if distance < best_d {
@@ -259,7 +262,7 @@ impl super::World {
     }
 
     pub(crate) fn enemy_fire(&mut self) {
-        if matches!(task_of(self.level), Task::Gate) {
+        if matches!(self.task(), Task::Gate) {
             return;
         }
         let alt_px = self.alt >> 8;
@@ -378,6 +381,16 @@ impl super::World {
             self.hurt_foe(slot);
             return;
         }
+        if z <= 12 << 8
+            && let Some(slot) = self
+                .drums
+                .iter()
+                .position(|drum| drum.alive && near_step(drum.x, drum.y, prev_x, prev_y, x, y, 8))
+        {
+            self.shots[index].alive = false;
+            self.set_off_drum(slot);
+            return;
+        }
         let mut man = None;
         // Only once the round is down among them. A high pass is not a hit,
         // and the step is long enough that a single sample can jump a man.
@@ -448,7 +461,7 @@ impl super::World {
         self.add_boom(x, y, z, 0);
         self.score += 50;
         self.sfx |= SFX_BOOM;
-        if matches!(task_of(self.level), Task::Swarm | Task::Cover) && self.targets > 0 {
+        if matches!(self.task(), Task::Swarm | Task::Cover) && self.targets > 0 {
             self.targets -= 1;
             self.sfx |= SFX_MARK;
         }
@@ -462,7 +475,7 @@ impl super::World {
         let py = self.y;
         let pz = self.alt;
         let defend = defend_card(self.level);
-        let cover = matches!(task_of(self.level), Task::Cover);
+        let cover = matches!(self.task(), Task::Cover);
         let escort = if cover {
             self.trucks
                 .iter()
@@ -609,8 +622,10 @@ impl super::World {
         let dir = self.trucks[index].dir;
         let vertical = self.trucks[index].vertical;
         self.trucks[index].alive = false;
-        self.leave_husk(x, y, dir, vertical, HUSK_TRUCK);
+        let husk = self.leave_husk(x, y, dir, vertical, HUSK_TRUCK);
+        self.husks[husk].burn = BURN_TRUCK;
         self.fling(x, y, false);
+        self.fuel_flare(x, y);
         self.mark_quiet(hx, hy);
         self.note_kill(
             bg,
@@ -641,7 +656,8 @@ impl super::World {
         let dir = self.tanks[index].dir;
         let vertical = self.tanks[index].vertical;
         self.tanks[index].alive = false;
-        self.leave_husk(x, y, dir, vertical, HUSK_TANK);
+        let husk = self.leave_husk(x, y, dir, vertical, HUSK_TANK);
+        self.husks[husk].burn = BURN_TRUCK;
         self.mark_quiet(hx, hy);
         if objective {
             self.claim_armor();
@@ -824,7 +840,7 @@ impl super::World {
             }
             // The push walks with its infantry. A faster truck would leave the
             // two men the mark is meant to cover.
-            if self.trucks[index].objective && matches!(task_of(self.level), Task::Push) {
+            if self.trucks[index].objective && matches!(self.task(), Task::Push) {
                 self.trucks[index].y -= rush_step(self.level);
                 continue;
             }
@@ -904,24 +920,20 @@ impl super::World {
             if !self.soldiers[index].alive {
                 continue;
             }
-            if self.soldiers[index].objective
-                && matches!(task_of(self.level), Task::Fpv | Task::Nest)
-            {
+            if self.soldiers[index].objective && matches!(self.task(), Task::Fpv | Task::Nest) {
                 continue;
             }
             // A pair has to stay inside one grenade. The patrol walk splits them.
             // The post and the pits stand too: a walk leads the drop off the men.
             if self.soldiers[index].objective
                 && matches!(
-                    task_of(self.level),
+                    self.task(),
                     Task::Grove | Task::Thaw | Task::Hearth | Task::Pits
                 )
             {
                 continue;
             }
-            if self.soldiers[index].objective
-                && matches!(task_of(self.level), Task::Rush | Task::Push)
-            {
+            if self.soldiers[index].objective && matches!(self.task(), Task::Rush | Task::Push) {
                 self.soldiers[index].y -= rush_step(self.level);
                 self.soldiers[index].step = self.soldiers[index].step.wrapping_add(1);
                 continue;
@@ -941,6 +953,11 @@ impl super::World {
     }
 
     pub(crate) fn update_booms(&mut self) {
+        for husk in &mut self.husks {
+            if husk.burn > 0 {
+                husk.burn -= 1;
+            }
+        }
         for boom in &mut self.booms {
             if !boom.alive {
                 continue;
@@ -967,7 +984,9 @@ impl super::World {
                 bit.y += bit.vy;
                 bit.z = (bit.z + bit.vz).max(0);
             }
-            if bit.life > 48 {
+            // A turret thrown by a cook-off is up for longer, and lies where it lands.
+            let span = if bit.kind == SCRAP_TURRET { 150 } else { 48 };
+            if bit.life > span {
                 bit.alive = false;
             }
         }
@@ -986,7 +1005,13 @@ impl super::World {
         let picture = if kind == KIND_VOG { 4 } else { radius };
         self.add_boom(x, y, 0, picture);
         if kind != KIND_VOG {
-            self.damage_tiles(bg, x, y, radius);
+            let dig = if kind == KIND_FUEL {
+                radius / 2
+            } else {
+                radius
+            };
+            self.damage_tiles(bg, x, y, dig);
+            self.hit_guns(x, y, radius);
         }
         let reach = radius * radius;
         // A bunker still stands unless the blast is outside the inner tear.
@@ -996,6 +1021,7 @@ impl super::World {
         let mut ash_dir = [0i32; 18];
         let mut ash_vert = [false; 18];
         let mut ash_kind = [0u8; 18];
+        let mut ash_burn = [0i16; 18];
         let mut ash_n = 0usize;
         let mut graves = [(0i32, 0i32); MAX_SOLDIERS + MAX_TRUCKS];
         let mut graves_n = 0;
@@ -1009,7 +1035,7 @@ impl super::World {
         let mut flung_n = 0usize;
         for truck in &mut self.trucks {
             let dist = dist2_px(truck.x, truck.y, x, y);
-            if kind == KIND_BOMB && truck.alive && dist <= reach {
+            if matches!(kind, KIND_BOMB | KIND_FUEL) && truck.alive && dist <= reach {
                 graves[graves_n] = (truck.home_tx, truck.home_ty);
                 graves_n += 1;
                 if truck.goal {
@@ -1027,6 +1053,7 @@ impl super::World {
                     ash_dir[ash_n] = truck.dir;
                     ash_vert[ash_n] = truck.vertical;
                     ash_kind[ash_n] = HUSK_TRUCK;
+                    ash_burn[ash_n] = BURN_TRUCK;
                     ash_n += 1;
                 }
                 truck.alive = false;
@@ -1038,7 +1065,7 @@ impl super::World {
         }
         for soldier in &mut self.soldiers {
             let dist = dist2_px(soldier.x, soldier.y, x, y);
-            if matches!(kind, KIND_VOG | KIND_BOMB | KIND_HE | KIND_MINE)
+            if matches!(kind, KIND_VOG | KIND_BOMB | KIND_HE | KIND_MINE | KIND_FUEL)
                 && soldier.alive
                 && dist <= reach
             {
@@ -1147,6 +1174,7 @@ impl super::World {
                 ash_dir[ash_n] = tank.dir;
                 ash_vert[ash_n] = tank.vertical;
                 ash_kind[ash_n] = HUSK_TANK;
+                ash_burn[ash_n] = if hatch { BURN_COOK_OFF } else { BURN_TRUCK };
                 ash_n += 1;
             }
             tank.alive = false;
@@ -1167,6 +1195,7 @@ impl super::World {
                     ash_dir[ash_n] = 0;
                     ash_vert[ash_n] = false;
                     ash_kind[ash_n] = HUSK_BUNKER;
+                    ash_burn[ash_n] = BURN_BUNKER;
                     ash_n += 1;
                 }
                 bunker.alive = false;
@@ -1185,17 +1214,31 @@ impl super::World {
         for &(px, py, turret) in &flung[..flung_n] {
             if turret {
                 self.add_plume(px, py);
+                self.cook_off(px, py);
             }
             self.fling(px, py, turret);
         }
         for step in 0..ash_n {
-            self.leave_husk(
+            let husk = self.leave_husk(
                 ash_x[step],
                 ash_y[step],
                 ash_dir[step],
                 ash_vert[step],
                 ash_kind[step],
             );
+            self.husks[husk].burn = ash_burn[step];
+            if ash_kind[step] == HUSK_TRUCK {
+                self.fuel_flare(ash_x[step], ash_y[step]);
+            }
+        }
+        if kind != KIND_VOG {
+            let reach = (radius + 6) * (radius + 6);
+            for slot in 0..MAX_DRUMS {
+                let drum = self.drums[slot];
+                if drum.alive && dist2_px(drum.x, drum.y, x, y) <= reach {
+                    self.set_off_drum(slot);
+                }
+            }
         }
         if depth >= 4 {
             return;
@@ -1312,13 +1355,14 @@ impl super::World {
 
     /// The convoy truck reached the mark. The sortie is lost.
     pub(crate) fn check_convoy(&mut self) {
-        if !matches!(task_of(self.level), Task::Convoy | Task::Drift) || self.targets <= 0 {
+        if !matches!(self.task(), Task::Convoy | Task::Drift) || self.targets <= 0 {
             return;
         }
+        let line = self.convoy_line().1;
         let arrived = self
             .trucks
             .iter()
-            .any(|truck| truck.alive && truck.goal && tile_of(truck.y) <= 4);
+            .any(|truck| truck.alive && truck.goal && tile_of(truck.y) <= line);
         if arrived {
             self.fail(Why::Truck);
         }
@@ -1326,7 +1370,7 @@ impl super::World {
 
     /// The escort truck reached the posts. The quads do not stop that.
     pub(crate) fn check_cover(&mut self) {
-        if !matches!(task_of(self.level), Task::Cover) || self.targets <= 0 {
+        if !matches!(self.task(), Task::Cover) || self.targets <= 0 {
             return;
         }
         let arrived = self
@@ -1340,18 +1384,19 @@ impl super::World {
 
     /// The base line is north. A living mark that reaches it takes the place.
     pub(crate) fn check_rush(&mut self) {
-        let task = task_of(self.level);
+        let task = self.task();
         if !matches!(task, Task::Rush | Task::Push) || self.targets <= 0 {
             return;
         }
+        let line = self.rush_line();
         let men = self
             .soldiers
             .iter()
-            .any(|soldier| soldier.alive && soldier.objective && tile_of(soldier.y) <= 14);
+            .any(|soldier| soldier.alive && soldier.objective && tile_of(soldier.y) <= line);
         let rigs = self
             .trucks
             .iter()
-            .any(|truck| truck.alive && truck.objective && tile_of(truck.y) <= 14);
+            .any(|truck| truck.alive && truck.objective && tile_of(truck.y) <= line);
         if men || rigs {
             self.fail(Why::Line);
         }
@@ -1375,7 +1420,7 @@ impl super::World {
     /// Crossing the gate line either clears the card or sends the plane back.
     /// The posts stay closed until the hover and the bomb are done.
     pub(crate) fn cross_gate(&mut self) -> bool {
-        if !matches!(task_of(self.level), Task::Gate) || self.targets <= 0 || self.lesson < 2 {
+        if !matches!(self.task(), Task::Gate) || self.targets <= 0 || self.lesson < 2 {
             return true;
         }
         let gy = self.gate_y();
@@ -1399,7 +1444,15 @@ impl super::World {
         }
     }
 
-    pub(crate) fn leave_husk(&mut self, x: i32, y: i32, dir: i32, vertical: bool, kind: u8) {
+    /// The wreck's slot, so a fresh kill can set it burning.
+    pub(crate) fn leave_husk(
+        &mut self,
+        x: i32,
+        y: i32,
+        dir: i32,
+        vertical: bool,
+        kind: u8,
+    ) -> usize {
         let husk = Husk {
             x,
             y,
@@ -1407,14 +1460,85 @@ impl super::World {
             vertical,
             kind,
             alive: true,
+            burn: 0,
         };
         if let Some(slot) = self.husks.iter().position(|held| !held.alive) {
             self.husks[slot] = husk;
-            return;
+            return slot;
         }
         let slot = (self.husk_at as usize) % MAX_HUSKS;
         self.husk_at = self.husk_at.wrapping_add(1);
         self.husks[slot] = husk;
+        slot
+    }
+
+    /// A burst that comes `wait` frames from now. One that `hurts` is a
+    /// blast of its own; the others are fire and noise.
+    fn pop_later(&mut self, x: i32, y: i32, wait: i16, radius: i16, hurts: bool) {
+        if let Some(slot) = self.pops.iter_mut().find(|pop| !pop.alive) {
+            *slot = Pop {
+                x,
+                y,
+                wait,
+                radius,
+                hurts,
+                alive: true,
+            };
+        }
+    }
+
+    /// The rounds inside go one after another, then the fuel. The hull
+    /// burns long after.
+    pub(crate) fn cook_off(&mut self, x: i32, y: i32) {
+        for (dx, dy, wait, radius) in [
+            (-5, 3, 8, 12),
+            (4, -4, 18, 14),
+            (2, 5, 30, 12),
+            (0, 0, 44, 30),
+        ] {
+            self.pop_later(x + (dx << 8), y + (dy << 8), wait, radius, false);
+        }
+    }
+
+    /// A truck's tank catches a moment after the hit.
+    pub(crate) fn fuel_flare(&mut self, x: i32, y: i32) {
+        self.pop_later(x, y.wrapping_sub(2 << 8), 6, 22, false);
+    }
+
+    /// A dump goes up: a fireball now, its own blast a beat later, which
+    /// reaches the next dump if one is close.
+    pub(crate) fn set_off_drum(&mut self, slot: usize) {
+        let drum = self.drums[slot];
+        if !drum.alive {
+            return;
+        }
+        self.drums[slot].alive = false;
+        self.mark_quiet(drum.home_tx, drum.home_ty);
+        self.score += 25;
+        self.add_boom(drum.x, drum.y, 0, 30);
+        self.pop_later(drum.x, drum.y, 5, DRUM_BLAST as i16, true);
+        self.pop_later(drum.x - (6 << 8), drum.y + (3 << 8), 14, 20, false);
+        self.pop_later(drum.x + (5 << 8), drum.y - (4 << 8), 24, 26, false);
+    }
+
+    /// Bursts whose turn has come.
+    pub(crate) fn update_pops(&mut self, bg: &mut AffineBackground) {
+        for slot in 0..MAX_POPS {
+            let pop = self.pops[slot];
+            if !pop.alive {
+                continue;
+            }
+            if pop.wait > 0 {
+                self.pops[slot].wait -= 1;
+                continue;
+            }
+            self.pops[slot].alive = false;
+            if pop.hurts {
+                self.explode(bg, pop.x, pop.y, i32::from(pop.radius), 1, KIND_FUEL);
+            } else {
+                self.add_boom(pop.x, pop.y, 0, i32::from(pop.radius));
+            }
+        }
     }
 
     pub(crate) fn add_boom(&mut self, x: i32, y: i32, z: i32, radius: i32) {
@@ -1474,7 +1598,7 @@ impl super::World {
     pub(crate) fn fling(&mut self, x: i32, y: i32, turret: bool) {
         let mut n = 0u32;
         if turret {
-            self.launch(x, y, SCRAP_TURRET, (30, -20, 72), n);
+            self.launch(x, y, SCRAP_TURRET, (30, -20, 100), n);
             n += 1;
         }
         for step in 0..4 {

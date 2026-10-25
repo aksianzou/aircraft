@@ -11,13 +11,17 @@ impl super::World {
     pub(crate) fn preview(bg: &mut AffineBackground, level: u8) -> Self {
         let level = level % LEVEL_COUNT;
         let task = task_of(level);
+        let card = chain(level);
+        let first = stage_task(level, 0);
         let mode = match task {
             Task::Fpv | Task::Nest | Task::Dart => Mode::Fpv,
             Task::Guide | Task::Column | Task::Rush | Task::Push | Task::Bend => Mode::Guide,
+            Task::Chain => card.map_or(Mode::Quad, |card| card.mode),
             _ => Mode::Quad,
         };
         let (tx, ty) = start_tile(level);
         let alt = match task {
+            Task::Chain => card.map_or(12, |card| card.alt),
             // Above the bar. The lesson is to come down into the opening.
             Task::Gate => 20,
             Task::Fpv => 10,
@@ -31,8 +35,8 @@ impl super::World {
         let start_x = tile_mid(tx);
         let start_y = tile_mid(ty);
         let start_alt = alt << 8;
-        let fetch = matches!(task, Task::Fetch);
-        let (bombs, he, mines, vog) = rack(task);
+        let fetch = matches!(first, Task::Fetch);
+        let (bombs, he, mines, vog) = card.map_or(rack(task), |card| card.rack);
         let mut world = Self {
             marks: vec![dead_mark(); MAX_MARKS],
             mark_len: 0,
@@ -53,6 +57,7 @@ impl super::World {
                 // Four nests, one spare. The dart keeps a single spare.
                 Task::Nest => 5,
                 Task::Dart => 4,
+                Task::Chain => card.map_or(0, |card| card.drones),
                 _ => 0,
             },
             vx: 0,
@@ -66,7 +71,7 @@ impl super::World {
             vog,
             stick_hold: 0,
             stick_key: 0,
-            arm: opening_arm(task),
+            arm: card.map_or(opening_arm(task), |card| card.stages[0].arm),
             hull: 100,
             battery: 100,
             blackout: 0,
@@ -101,6 +106,8 @@ impl super::World {
                 Task::Drift => 4,
                 Task::Thaw => 7,
                 Task::Hearth => 5,
+                Task::Scout | Task::Battery => 0,
+                Task::Chain => card.map_or(0, |card| stage_targets(level, &card.stages[0])),
             },
             fire_cd: 0,
             recover: 0,
@@ -115,6 +122,10 @@ impl super::World {
             salvo: 0,
             salvo_cd: 0,
             lesson: 0,
+            stage: 0,
+            seen: 0,
+            guns_down: 0,
+            cue: if chain(level).is_some() { STAGE_CUE } else { 0 },
             mark_x: 0,
             mark_y: 0,
             bloom: 0,
@@ -133,12 +144,17 @@ impl super::World {
             husk_at: 0,
             husks: [dead_husk(); MAX_HUSKS],
             scrap: [dead_scrap(); MAX_SCRAP],
+            drums: [dead_drum(); MAX_DRUMS],
+            pops: [dead_pop(); MAX_POPS],
         };
         world.park(bg);
         world.view_tx = tx;
         world.view_ty = ty;
         world.seat_objective();
         world.seat_foes();
+        for &(tx, ty) in card.map_or(&[][..], |card| card.drums) {
+            world.try_spawn_drum(tx, ty);
+        }
         world
     }
 
@@ -230,6 +246,10 @@ impl super::World {
     }
 
     pub(crate) fn seat_objective(&mut self) {
+        if chain(self.level).is_some() {
+            self.seat_stage();
+            return;
+        }
         let task = task_of(self.level);
         match task {
             Task::Trench => {
@@ -756,9 +776,10 @@ impl super::World {
     }
 
     pub(crate) fn hq_goal(&self, tx: i32, ty: i32) -> bool {
-        matches!(task_of(self.level), Task::Hq)
-            && (22..=24).contains(&tx)
-            && (16..=17).contains(&ty)
+        let (hx, hy) = self.hq_corner();
+        matches!(self.task(), Task::Hq)
+            && (hx..=hx + 2).contains(&tx)
+            && (hy..=hy + 1).contains(&ty)
     }
 
     /// A kill counts only when it is this card's objective.
@@ -769,7 +790,7 @@ impl super::World {
             goal,
             objective,
         } = kill;
-        let counts = match task_of(self.level) {
+        let counts = match self.task() {
             Task::Officer => officer,
             Task::Hearth | Task::Trench | Task::Pits | Task::Grove | Task::Thaw => {
                 objective && !truck
@@ -794,7 +815,10 @@ impl super::World {
             | Task::Flare
             | Task::Skirt
             | Task::Fetch
-            | Task::Swarm => false,
+            | Task::Swarm
+            | Task::Scout
+            | Task::Battery
+            | Task::Chain => false,
         };
         if counts && self.targets > 0 {
             self.targets -= 1;
@@ -804,7 +828,7 @@ impl super::World {
 
     pub(crate) fn claim_armor(&mut self) {
         if matches!(
-            task_of(self.level),
+            self.task(),
             Task::Armor | Task::Flare | Task::Fetch | Task::Thaw
         ) && self.targets > 0
         {
@@ -814,7 +838,7 @@ impl super::World {
     }
 
     pub(crate) fn claim_pill(&mut self) {
-        if matches!(task_of(self.level), Task::Pill | Task::Skirt) && self.targets > 0 {
+        if matches!(self.task(), Task::Pill | Task::Skirt) && self.targets > 0 {
             self.targets -= 1;
             self.sfx |= SFX_MARK;
         }
@@ -1036,6 +1060,7 @@ impl super::World {
             || homed(&self.trucks, tx, ty)
             || homed(&self.tanks, tx, ty)
             || homed(&self.bunkers, tx, ty)
+            || homed(&self.drums, tx, ty)
     }
 
     pub(crate) fn try_spawn_soldier(&mut self, tx: i32, ty: i32) {
@@ -1127,12 +1152,29 @@ impl super::World {
         };
     }
 
+    pub(crate) fn try_spawn_drum(&mut self, tx: i32, ty: i32) {
+        if self.occupied(tx, ty) {
+            return;
+        }
+        let Some(slot) = free_slot(&mut self.drums) else {
+            return;
+        };
+        *slot = Drum {
+            x: tile_mid(tx),
+            y: tile_mid(ty),
+            home_tx: tx,
+            home_ty: ty,
+            alive: true,
+        };
+    }
+
     pub(crate) fn consider_tile(&mut self, tx: i32, ty: i32) {
         // The pits are already manned and the armour is already dead.
         // Fetch is the caches and the three tanks. A trench rifle under the
         // hatch makes the sit impossible, and the tanks' own guns still
         // cover the way in.
-        if matches!(task_of(self.level), Task::Pits | Task::Fetch | Task::Gate)
+        if matches!(task_of(self.level), Task::Pits | Task::Gate)
+            || matches!(self.task(), Task::Fetch)
             || winter_card(self.level)
         {
             return;
@@ -1149,6 +1191,13 @@ impl super::World {
             }
         } else if seeded == T_TRENCH && hash(tx, ty) % 11 == 2 && !self.is_quiet(tx, ty) {
             self.try_spawn_bunker(tx, ty);
+        } else if seeded == T_DIRT && !self.is_quiet(tx, ty) {
+            // A fuel dump on the dirt shoulder of a road.
+            let lx = tx.rem_euclid(REGION);
+            let ly = ty.rem_euclid(REGION);
+            if (lx == 2 || ly == 2) && hash(tx, ty.wrapping_add(7)) % 31 == 3 {
+                self.try_spawn_drum(tx, ty);
+            }
         } else if seeded == T_ROAD && !self.is_quiet(tx, ty) {
             let lx = tx.rem_euclid(REGION);
             let ly = ty.rem_euclid(REGION);
@@ -1170,6 +1219,7 @@ impl super::World {
         retire(&mut self.trucks, home);
         retire(&mut self.tanks, home);
         retire(&mut self.bunkers, home);
+        retire(&mut self.drums, home);
     }
 
     pub(crate) fn maintain_actors(&mut self) {

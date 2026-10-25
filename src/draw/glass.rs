@@ -398,6 +398,8 @@ fn tone_of(sprite: &'static Sprite) -> Option<Tone> {
             &sprites::BUNKER,
             &sprites::BUNKER_NEAR,
             &sprites::BUNKER_TOP,
+            &sprites::DRUMS,
+            &sprites::DRUMS_TOP,
             &sprites::HQ,
             &sprites::HQ_NEAR,
             &sprites::FOE,

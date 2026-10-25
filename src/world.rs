@@ -3,9 +3,12 @@ use agb::fixnum::{Num, num};
 use agb::input::Tri;
 use alloc::vec::Vec;
 
+mod chain;
 mod combat;
 mod field;
 mod flight;
+
+pub(crate) use chain::*;
 
 pub(crate) const SFX_GUN: u8 = 1;
 pub(crate) const SFX_LINK: u8 = 2;
@@ -75,7 +78,8 @@ pub(crate) const T_STUMP: u8 = 17;
 /// Sixteen texels from the zenith to the haze. The sky's lines point at them.
 pub(crate) const T_HAZE: u8 = 21;
 
-pub(crate) const LEVEL_COUNT: u8 = 30;
+/// Every card, the stage cards included. A card's number is its place in the save.
+pub(crate) const LEVEL_COUNT: u8 = 40;
 /// A battery sees the drone only inside its circle, and only under this height.
 /// At this height the airframe leaves every gun's sight.
 pub(crate) const AA_HIDE: i32 = 20;
@@ -89,6 +93,8 @@ pub(crate) const KIND_FLAK: u8 = 4;
 pub(crate) const KIND_SHELL: u8 = 5;
 /// Underbarrel grenade. Infantry only.
 pub(crate) const KIND_VOG: u8 = 6;
+/// A fuel dump going up. It hits like a bomb and burns more than it digs.
+pub(crate) const KIND_FUEL: u8 = 7;
 
 pub(crate) const ARM_GUN: u8 = 0;
 pub(crate) const ARM_BOMB: u8 = 1;
@@ -115,7 +121,7 @@ pub(crate) struct Kill {
 /// How many blasts beside the hull finish a full tank. Zero leaves the hull alone.
 pub(crate) fn hull_hits(kind: u8) -> i8 {
     match kind {
-        KIND_BOMB => BOMB_HULL_HITS,
+        KIND_BOMB | KIND_FUEL => BOMB_HULL_HITS,
         KIND_MINE => 2,
         _ => 0,
     }
@@ -129,8 +135,13 @@ pub(crate) const HP_BUNKER: i8 = 28;
 
 pub(crate) const MAX_SHOTS: usize = 12;
 pub(crate) const MAX_MINES: usize = 8;
-/// A blast lives on as smoke, so a few more than are ever on fire at once.
-pub(crate) const MAX_BOOMS: usize = 10;
+/// A blast lives on as smoke, and a cook-off is several, so a few more
+/// than are ever on fire at once.
+pub(crate) const MAX_BOOMS: usize = 16;
+/// Fuel dumps on the field at once.
+pub(crate) const MAX_DRUMS: usize = 6;
+/// Blasts still to come: a cook-off's later bursts, and a dump catching.
+pub(crate) const MAX_POPS: usize = 10;
 pub(crate) const MAX_BURNS: usize = 6;
 pub(crate) const MAX_TRUCKS: usize = 4;
 pub(crate) const MAX_TANKS: usize = 3;
@@ -239,6 +250,12 @@ pub(crate) enum Task {
     Thaw,
     /// One officer in the pines.
     Hearth,
+    /// Fly low over each mark in turn. What they find is the next stage.
+    Scout,
+    /// Knock out the card's guns. From above their height they cannot see the drop.
+    Battery,
+    /// A card of stages. Each stage is one of the tasks above.
+    Chain,
 }
 
 /// What the glass shows. The side instruments stay in their own colours.
@@ -254,6 +271,9 @@ pub(crate) enum Sensor {
 }
 
 pub(crate) fn sensor_of(level: u8) -> Sensor {
+    if let Some(card) = chain(level) {
+        return card.sensor;
+    }
     match task_of(level) {
         Task::Night | Task::Armor | Task::Flare => Sensor::Night,
         Task::Heat | Task::Pill | Task::Dart | Task::Skirt => Sensor::Heat,
@@ -296,7 +316,7 @@ pub(crate) fn task_of(level: u8) -> Task {
         27 => Task::Drift,
         28 => Task::Thaw,
         29 => Task::Hearth,
-        _ => Task::Guide,
+        _ => Task::Chain,
     }
 }
 
@@ -312,6 +332,9 @@ pub(crate) fn defend_card(level: u8) -> bool {
 
 /// Frames for the quick mark. A straight run fits. A search does not.
 pub(crate) fn time_budget(level: u8) -> i32 {
+    if let Some(card) = chain(level) {
+        return card.budget;
+    }
     let frames = match task_of(level) {
         Task::Officer | Task::Gate => 1800,
         Task::Trench | Task::Convoy | Task::Night | Task::Nest | Task::Dart => 2700,
@@ -332,6 +355,7 @@ pub(crate) fn time_budget(level: u8) -> i32 {
         Task::Cover | Task::Pits | Task::Drift => 4500,
         Task::Grove | Task::Thaw => 3600,
         Task::Hearth => 2700,
+        Task::Scout | Task::Battery | Task::Chain => 3600,
     };
     let frames = frames + approach_frames(level);
     if haul_card(level) || defend_card(level) {
@@ -385,7 +409,10 @@ pub(crate) fn rack(task: Task) -> (i32, i32, i32, i32) {
         | Task::Dart
         | Task::Bend
         | Task::Fetch
-        | Task::Swarm => (0, 0, 0, 0),
+        | Task::Swarm
+        | Task::Scout
+        | Task::Battery
+        | Task::Chain => (0, 0, 0, 0),
     }
 }
 
@@ -420,6 +447,12 @@ pub(crate) fn earned_marks(world: &World) -> u8 {
 }
 
 fn spare_clear(world: &World) -> bool {
+    if let Some(card) = chain(world.level) {
+        return match card.spare {
+            Spare::Drops(limit) => world.spent <= limit,
+            Spare::Drones(left) => world.drones >= left,
+        };
+    }
     let limit = match task_of(world.level) {
         // The lesson spends the one bomb it asks for.
         Task::Gate => return world.spent <= 1,
@@ -445,6 +478,7 @@ fn spare_clear(world: &World) -> bool {
         | Task::Flare
         | Task::Grove => 6,
         Task::Thaw | Task::Pits | Task::Hq => 8,
+        Task::Scout | Task::Battery | Task::Chain => 6,
     };
     world.spent <= limit
 }
@@ -495,6 +529,40 @@ pub(crate) struct Husk {
     pub(crate) dir: i32,
     pub(crate) vertical: bool,
     pub(crate) kind: u8,
+    pub(crate) alive: bool,
+    /// Frames it still burns, with smoke climbing off it.
+    pub(crate) burn: i16,
+}
+
+/// Fuel drums stacked on the ground. Any blast near them, or a burst of the
+/// gun, sets them off, and their own blast reaches whatever stands close.
+#[derive(Clone, Copy)]
+pub(crate) struct Drum {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) home_tx: i32,
+    pub(crate) home_ty: i32,
+    pub(crate) alive: bool,
+}
+
+/// Frames a wreck burns: a truck or a tank killed from outside, a tank
+/// whose rounds went up inside, a bunker.
+pub(crate) const BURN_TRUCK: i16 = 420;
+pub(crate) const BURN_COOK_OFF: i16 = 900;
+pub(crate) const BURN_BUNKER: i16 = 240;
+
+/// How far a dump's own blast reaches, in pixels.
+pub(crate) const DRUM_BLAST: i32 = 26;
+
+/// A blast waiting its turn. `hurts` is a dump going up, which damages
+/// what is near; the rest are a cook-off's bursts, fire and noise only.
+#[derive(Clone, Copy)]
+pub(crate) struct Pop {
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+    pub(crate) wait: i16,
+    pub(crate) radius: i16,
+    pub(crate) hurts: bool,
     pub(crate) alive: bool,
 }
 
@@ -726,6 +794,7 @@ unit!(Soldier, |man| man.officer || man.objective);
 unit!(Truck, |truck| truck.goal || truck.objective);
 unit!(Tank, |tank| tank.objective);
 unit!(Bunker, |bunker| bunker.objective);
+unit!(Drum, |_drum| false);
 
 #[derive(Clone, Copy)]
 pub(crate) struct Mark {
@@ -793,6 +862,14 @@ pub(crate) struct World {
     pub(crate) salvo_cd: i8,
     /// First card only. 0 hover over the mark, 1 drop, 2 fly the gap.
     pub(crate) lesson: u8,
+    /// The stage in hand on a stage card. Zero on every other card.
+    pub(crate) stage: u8,
+    /// Scout marks already flown over, one bit each.
+    pub(crate) seen: u8,
+    /// Batteries knocked out, one bit per gun of the card.
+    pub(crate) guns_down: u8,
+    /// Frames the stage's line stays under the glass.
+    pub(crate) cue: i16,
     pub(crate) mark_x: i32,
     pub(crate) mark_y: i32,
     /// Ground wash after a blast. Counts down to the plain picture.
@@ -816,6 +893,8 @@ pub(crate) struct World {
     pub(crate) husk_at: u8,
     pub(crate) husks: [Husk; MAX_HUSKS],
     pub(crate) scrap: [Scrap; MAX_SCRAP],
+    pub(crate) drums: [Drum; MAX_DRUMS],
+    pub(crate) pops: [Pop; MAX_POPS],
 }
 
 pub(crate) fn wrap_yaw(yaw: &mut Num<i32, 8>) {
@@ -863,6 +942,9 @@ pub(crate) fn start_tile(level: u8) -> (i32, i32) {
     // keep them close: the lesson, the chase, the spotter's clocks, the mine
     // hauls, the pad under attack, the escort, and the snow cards laid out
     // around their pad. `approach_frames` pays for each extra run.
+    if let Some(card) = chain(level) {
+        return card.pad;
+    }
     match task_of(level) {
         Task::Trench | Task::Officer | Task::Hq | Task::Pill => (24, 58),
         Task::Night => (24, 60),
@@ -888,11 +970,15 @@ pub(crate) fn start_tile(level: u8) -> (i32, i32) {
         Task::Drift => (14, 62),
         Task::Thaw => (24, 68),
         Task::Hearth => (24, 66),
+        Task::Scout | Task::Battery | Task::Chain => (24, 90),
     }
 }
 
 /// The snow cards after the ash pits. Pines stay green.
 pub(crate) fn winter_card(level: u8) -> bool {
+    if let Some(card) = chain(level) {
+        return card.winter;
+    }
     matches!(
         task_of(level),
         Task::Grove | Task::Drift | Task::Thaw | Task::Hearth
@@ -946,8 +1032,12 @@ pub(crate) const LANE_GUNS: [AaGun; 6] = [
     },
 ];
 
-pub(crate) fn aa_guns(task: Task) -> &'static [AaGun] {
-    match task {
+/// The card's batteries. A stage card can knock them out; `World::gun_up` says which still stand.
+pub(crate) fn aa_guns(level: u8) -> &'static [AaGun] {
+    if let Some(card) = chain(level) {
+        return card.guns;
+    }
+    match task_of(level) {
         Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => &LANE_GUNS,
         Task::Hearth => &HEARTH_WATCH,
         _ => &[],
@@ -961,13 +1051,6 @@ pub(crate) fn gun_at(gun: &AaGun) -> (i32, i32) {
 /// The drone is in sight under `AA_HIDE`. At that height every gun loses it.
 pub(crate) fn guns_see(alt_px: i32) -> bool {
     alt_px < AA_HIDE
-}
-
-pub(crate) fn aa_covers(guns: &[AaGun], x: i32, y: i32) -> bool {
-    guns.iter().any(|gun| {
-        let (gx, gy) = gun_at(gun);
-        dist2_px(x, y, gx, gy) <= gun.radius * gun.radius
-    })
 }
 
 /// Radar dial point back into the world. Ahead on the dial is negative `ry`.
@@ -1080,6 +1163,9 @@ fn winter_tile(level: u8, tx: i32, ty: i32, tile: u8) -> u8 {
 
 /// Centres and radii of the brown islands on a snow card.
 fn mud_islands(level: u8) -> &'static [(i32, i32, i32)] {
+    if let Some(card) = chain(level) {
+        return card.mud;
+    }
     match task_of(level) {
         Task::Grove => &[(22, 32, 6), (40, 28, 3)],
         Task::Drift => &[(12, 34, 4), (22, 20, 3)],
@@ -1283,7 +1369,9 @@ pub(crate) fn cache_spots(level: u8) -> [(i32, i32); 6] {
 
 /// Where the mine quad can sit and fill the battery. Clear of the tanks.
 pub(crate) fn charge_spots(level: u8) -> &'static [(i32, i32)] {
-    if haul_card(level) {
+    if let Some(card) = chain(level) {
+        card.charge
+    } else if haul_card(level) {
         &[(24, 56), (24, 102)]
     } else if matches!(task_of(level), Task::Fetch) {
         &[(24, 62), (24, 102)]
@@ -1317,6 +1405,28 @@ pub(crate) fn dead_husk() -> Husk {
         dir: 0,
         vertical: false,
         kind: 0,
+        alive: false,
+        burn: 0,
+    }
+}
+
+pub(crate) fn dead_drum() -> Drum {
+    Drum {
+        x: 0,
+        y: 0,
+        home_tx: 0,
+        home_ty: 0,
+        alive: false,
+    }
+}
+
+pub(crate) fn dead_pop() -> Pop {
+    Pop {
+        x: 0,
+        y: 0,
+        wait: 0,
+        radius: 0,
+        hurts: false,
         alive: false,
     }
 }
@@ -1479,9 +1589,10 @@ pub(crate) fn foe_spots(level: u8) -> [(i32, i32); MAX_FOES] {
 /// Frames from the mark until the first rocket.
 pub(crate) const GUIDE_WAIT: i16 = 240;
 
-/// 0 on the first card, 16 on card 22. Cards after that stay at 16.
+/// 0 on the first card, 16 on card 22. Cards after that stay at 16. A stage
+/// card is as hot as the card it follows.
 pub(crate) fn heat(level: u8) -> i32 {
-    (level as i32).min(21) * 16 / 21
+    (pace(level) as i32).min(21) * 16 / 21
 }
 
 /// How fast a rush or a push walks north. 24 on the first card, 40 on the

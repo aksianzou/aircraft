@@ -50,6 +50,7 @@ impl super::World {
             if self.recover == 0 {
                 self.relaunch();
             }
+            self.update_pops(bg);
             self.update_booms();
             return;
         }
@@ -57,14 +58,17 @@ impl super::World {
             return;
         }
 
-        if matches!(task_of(self.level), Task::Fetch) {
+        if self.cue > 0 {
+            self.cue -= 1;
+        }
+        if matches!(self.task(), Task::Fetch) {
             self.fetch_tick(input);
         } else if self.mode != Mode::Gate
             && self.mode != Mode::Fpv
             && self.mode != Mode::Guide
             && self.signal_loss() < 16
         {
-            if input.is_just_pressed(Button::A) && !matches!(task_of(self.level), Task::Swarm) {
+            if input.is_just_pressed(Button::A) && !matches!(self.task(), Task::Swarm) {
                 self.arm = (self.arm + 1) % 5;
             }
             if self.fire_cd > 0 {
@@ -96,6 +100,7 @@ impl super::World {
         }
 
         self.update_shots(bg);
+        self.update_pops(bg);
         self.update_burns(bg);
         self.update_trucks();
         self.update_tanks();
@@ -109,12 +114,14 @@ impl super::World {
         self.aa_tick();
         self.update_booms();
         self.advance_drill();
+        self.check_scout();
         self.wear();
+        self.next_stage();
     }
 
     /// Hovering over the practice mark is the first step. The drop is the second.
     fn advance_drill(&mut self) {
-        if !matches!(task_of(self.level), Task::Gate) || self.lesson != 0 || !self.hover {
+        if !matches!(self.task(), Task::Gate) || self.lesson != 0 || !self.hover {
             return;
         }
         let (mx, my) = self.drill_mark();
@@ -124,7 +131,7 @@ impl super::World {
     }
 
     fn note_drill_drop(&mut self) {
-        if !matches!(task_of(self.level), Task::Gate) || self.lesson >= 2 || !self.hover {
+        if !matches!(self.task(), Task::Gate) || self.lesson >= 2 || !self.hover {
             return;
         }
         let (mx, my) = self.drill_mark();
@@ -296,7 +303,7 @@ impl super::World {
             input.x_tri()
         };
         // A dead link or a fall drops the hover. Select on the quad switches it.
-        let fetch = matches!(task_of(self.level), Task::Fetch);
+        let fetch = matches!(self.task(), Task::Fetch);
         if self.mode != Mode::Quad || self.falling || loss >= 16 {
             self.hover = false;
         } else if input.is_just_pressed(Button::Select) {
@@ -473,8 +480,10 @@ impl super::World {
             let dir = self.trucks[index].dir;
             let vertical = self.trucks[index].vertical;
             self.trucks[index].alive = false;
-            self.leave_husk(x, y, dir, vertical, HUSK_TRUCK);
+            let husk = self.leave_husk(x, y, dir, vertical, HUSK_TRUCK);
+            self.husks[husk].burn = BURN_TRUCK;
             self.fling(x, y, false);
+            self.fuel_flare(x, y);
             self.mark_quiet(hx, hy);
             self.note_kill(
                 bg,
@@ -555,7 +564,7 @@ impl super::World {
     }
 
     pub(crate) fn on_charger(&self) -> bool {
-        if !matches!(task_of(self.level), Task::Fetch) || self.falling || (self.alt >> 8) > 1 {
+        if !matches!(self.task(), Task::Fetch) || self.falling || (self.alt >> 8) > 1 {
             return false;
         }
         let tx = tile_of(self.x);

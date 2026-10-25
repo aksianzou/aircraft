@@ -98,6 +98,121 @@ fn house_briefing(gba: &mut agb::Gba) {
     agb::test_runner::assert_image_output("tests/briefing_house.png");
 }
 
+/// Every card once in the campaign, and each stage card laid out where it
+/// can be flown: the truck on a road, the roof and the marks on dry ground,
+/// all of it inside the radio.
+#[test_case]
+fn stage_cards_hold_together(_gba: &mut agb::Gba) {
+    let mut seen = 0u64;
+    for card in ORDER {
+        assert!(seen & (1 << card) == 0, "card {card} twice");
+        seen |= 1 << card;
+    }
+    assert!(seen == (1u64 << LEVEL_COUNT) - 1, "cards missing {seen:#x}");
+    assert!(ORDER[0] == 0 && chain(ORDER[ORDER.len() - 1]).is_none());
+    for level in FIRST_CHAIN..LEVEL_COUNT {
+        let card = chain(level).expect("a stage card");
+        assert!(card.stages.len() >= 2, "card {level} has one stage");
+        let (pad_x, pad_y) = card.pad;
+        let near = |tx: i32, ty: i32| {
+            let dx = (tx - pad_x).abs();
+            let dy = (ty - pad_y).abs();
+            assert!(
+                dx.max(dy) + dx.min(dy) / 2 <= 80,
+                "card {level}: ({tx}, {ty}) is past the radio"
+            );
+        };
+        for stage in card.stages {
+            for &(tx, ty) in stage.spots.iter().chain(stage.caches) {
+                near(tx, ty);
+                assert!(
+                    terrain(level, tx, ty) != T_WATER,
+                    "card {level}: ({tx}, {ty}) is in a pond"
+                );
+            }
+            match stage.task {
+                Task::Hq => {
+                    let (hx, hy) = stage.at;
+                    near(hx, hy);
+                    for ty in hy..=hy + 1 {
+                        for tx in hx..=hx + 2 {
+                            let tile = terrain(level, tx, ty);
+                            assert!(
+                                tile != T_WATER && tile != T_ROAD,
+                                "card {level}: roof ({tx}, {ty}) is {tile}"
+                            );
+                        }
+                    }
+                }
+                Task::Convoy => {
+                    let (sx, sy) = stage.spots[0];
+                    let (lx, ly) = stage.at;
+                    assert!(lx == sx && ly < sy, "card {level}: the line is not ahead");
+                    for ty in ly..=sy {
+                        assert!(
+                            terrain(level, sx, ty) == T_ROAD,
+                            "card {level}: no road at ({sx}, {ty})"
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (index, gun) in aa_guns(level).iter().enumerate() {
+            assert!(index < 8, "card {level}: more guns than bits");
+            near(gun.tx, gun.ty);
+        }
+    }
+}
+
+/// A save from the thirty-card cartridge carries over. Its numbers are the
+/// cards', so the clears and marks stay; the furthest card becomes its place
+/// in the new order. Then the new record reads back as it was written.
+#[test_case]
+fn first_save_carries_over(_gba: &mut agb::Gba) {
+    let fold = |bytes: &[u8], salt: u8| bytes.iter().fold(salt, |out, byte| out ^ byte);
+    let mut old = [0u8; 48];
+    old[..4].copy_from_slice(&[0x41, 0x52, 0x43, 0x31]);
+    // The lane is the furthest card, cards 1 to 12 are cleared, the briefing is card 10.
+    old[4] = 12;
+    old[5] = 0xFF;
+    old[6] = 9;
+    old[7] = 12 ^ 0xFF ^ 9 ^ 0x5A;
+    old[8] = 0x0F;
+    old[9] = 0x0F ^ 0xA5;
+    old[11] = 0x3C;
+    old[13] = 0xC3;
+    // Three marks on card 1 and on card 4.
+    old[14] = 0b0000_0111;
+    old[15] = 0b0000_1110;
+    old[24] = fold(&old[14..24], 0x6B);
+    old[32] = fold(&old[25..32], 0xC5);
+    old[35] = 0x3D;
+    old[37] = 0xA7;
+    for (index, byte) in old.into_iter().enumerate() {
+        unsafe { (0x0E00_0000 as *mut u8).add(index).write_volatile(byte) };
+    }
+    let progress = load_progress();
+    assert!(progress.cleared == 0xFFF, "cleared {:#x}", progress.cleared);
+    assert!(
+        progress.unlocked == slot_of(12),
+        "unlocked {}",
+        progress.unlocked
+    );
+    assert!(progress.level == 9);
+    assert!(progress.mark_row(0) == 7 && progress.mark_row(3) == 7);
+    assert!(progress.mark_row(1) == 0);
+    // The stage cards before the lane are open, and the one after it is not.
+    assert!(slot_of(31) < progress.unlocked && slot_of(32) > progress.unlocked);
+    store_progress(&progress);
+    let again = load_progress();
+    assert!(again.cleared == progress.cleared && again.unlocked == progress.unlocked);
+    assert!(again.level == progress.level && again.mark_row(3) == 7);
+    for index in 0..48 {
+        unsafe { (0x0E00_0000 as *mut u8).add(index).write_volatile(0) };
+    }
+}
+
 /// Timers 2 and 3 in cascade: CPU cycles, 32 bits wide.
 fn clock_start() {
     unsafe {
@@ -320,7 +435,7 @@ impl Digest {
 /// the drawing leaves every digest as it is.
 #[test_case]
 fn flight_glass(gba: &mut agb::Gba) {
-    const SHOTS: [(u8, i32); 10] = [
+    const SHOTS: [(u8, i32); 12] = [
         (0, 90),
         (2, 160),
         (5, 200),
@@ -331,6 +446,8 @@ fn flight_glass(gba: &mut agb::Gba) {
         (20, 200),
         (23, 120),
         (26, 200),
+        (31, 220),
+        (32, 200),
     ];
     reserve_glass();
     install_floor();
@@ -513,7 +630,7 @@ fn ground_map_holds_each_tile(_gba: &mut agb::Gba) {
 #[cfg(feature = "screens")]
 #[test_case]
 fn guide_screens(gba: &mut agb::Gba) {
-    const FLIGHTS: [(u8, i32, &str); 11] = [
+    const FLIGHTS: [(u8, i32, &str); 13] = [
         (0, 90, "gate"),
         (2, 160, "trench"),
         (4, 120, "convoy"),
@@ -525,6 +642,8 @@ fn guide_screens(gba: &mut agb::Gba) {
         (20, 200, "lift"),
         (23, 150, "crows"),
         (26, 200, "winter"),
+        (31, 40, "scout"),
+        (32, 400, "guns"),
     ];
     reserve_glass();
     install_floor();
@@ -534,12 +653,12 @@ fn guide_screens(gba: &mut agb::Gba) {
     let floor = ground();
     clear_ground_map();
     let vblank = VBlank::get();
-
     hide_ground();
     for (name, card) in [
         ("studio", None),
         ("briefing", Some(0u8)),
         ("briefing_lane", Some(12)),
+        ("briefing_stage", Some(30)),
     ] {
         vblank.wait_for_vblank();
         forget_sheets();
@@ -550,7 +669,7 @@ fn guide_screens(gba: &mut agb::Gba) {
                 &mut frame,
                 level,
                 0b101,
-                (level > 0, true),
+                (slot_of(level) > 0, true),
                 0,
                 sensor_of(level),
                 None,
@@ -582,4 +701,86 @@ fn guide_screens(gba: &mut agb::Gba) {
 #[cfg(feature = "screens")]
 fn gfx_backdrop(colour: Rgb) {
     unsafe { (0x0500_0000 as *mut u16).write_volatile(colour.to_rgb15().0) };
+}
+
+/// The guide's picture of the fire: a tank set off through its hatch, a
+/// truck bombed after it, then a fuel dump that takes the one beside it.
+/// The blasts are planted, so the moment is the same on every run.
+#[cfg(feature = "screens")]
+#[test_case]
+fn blast_screen(gba: &mut agb::Gba) {
+    reserve_glass();
+    install_floor();
+    let mut gfx = gba.graphics.get();
+    gfx.set_background_palettes(backgrounds::PALETTES);
+    let floor = ground();
+    clear_ground_map();
+    hide_ground();
+    let mut bench = Bench::default();
+    let mut idle = || {};
+    let mut world = World::preview(floor, 3);
+    while !world.boot_ready() {
+        world.boot_step(floor, 24, &mut idle);
+    }
+    let x0 = tile_mid(24);
+    let y0 = tile_mid(46);
+    world.soldiers = [dead_soldier(); MAX_SOLDIERS];
+    world.trucks = [dead_truck(); MAX_TRUCKS];
+    world.tanks = [dead_tank(); MAX_TANKS];
+    world.bunkers = [dead_bunker(); MAX_BUNKERS];
+    world.drums = [dead_drum(); MAX_DRUMS];
+    world.tanks[0] = Tank {
+        x: x0,
+        y: y0,
+        dir: 0,
+        vertical: false,
+        home_tx: 24,
+        home_ty: 46,
+        objective: false,
+        hp: HP_TANK,
+        cool: 255,
+        alive: true,
+    };
+    world.trucks[0] = Truck {
+        x: x0 - (30 << 8),
+        y: y0 + (6 << 8),
+        hp: HP_TRUCK,
+        cool: 255,
+        alive: true,
+        objective: false,
+        ..dead_truck()
+    };
+    for (slot, (dx, dy)) in [(26, 4), (40, -8)].into_iter().enumerate() {
+        world.drums[slot] = Drum {
+            x: x0 + (dx << 8),
+            y: y0 + (dy << 8),
+            home_tx: tile_of(x0 + (dx << 8)),
+            home_ty: tile_of(y0 + (dy << 8)),
+            alive: true,
+        };
+    }
+    world.x = x0 + (6 << 8);
+    world.y = y0 + (130 << 8);
+    world.alt = 14 << 8;
+    world.pitch = num!(0.01);
+    world.refill(&mut idle);
+    let vblank = VBlank::get();
+    for age in 0..=264 {
+        world.age = age;
+        match age {
+            10 => world.explode(floor, x0, y0, 10, 0, KIND_MINE),
+            150 => world.explode(floor, x0 - (30 << 8), y0 + (6 << 8), 14, 0, KIND_BOMB),
+            250 => world.set_off_drum(0),
+            _ => {}
+        }
+        world.update_pops(floor);
+        world.update_booms();
+        if world.bloom > 0 {
+            world.bloom -= 1;
+        }
+        vblank.wait_for_vblank();
+        world.sync_ground(&mut || {});
+        glass_frame(&mut gfx, &world, floor, Sensor::Day, &mut bench);
+    }
+    agb::test_runner::assert_image_output("target/screens/blast.png");
 }

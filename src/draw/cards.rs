@@ -18,7 +18,7 @@ pub(crate) fn draw_select(
     glass: Option<u8>,
 ) {
     // The operator's screen. Blue desktop, one window, the target in the frame.
-    draw_digits(frame, level as i32 + 1, 2, 8, 4);
+    draw_digits(frame, slot_of(level) as i32 + 1, 2, 8, 4);
     show_small_at(frame, b"MISSION", 28, 4);
     let (top, bottom) = mission_title(level);
     show_lockup_at(frame, top, bottom, 8, 16);
@@ -70,10 +70,16 @@ fn mission_brief(
     level: u8,
     sensor: Sensor,
 ) -> (&'static [u8], &'static [u8], &'static [u8], &'static [u8]) {
-    let craft: &'static [u8] = match task_of(level) {
-        Task::Fpv | Task::Nest | Task::Dart => b"KAMIKAZE",
-        Task::Guide | Task::Column | Task::Rush | Task::Push | Task::Bend => b"SPOTTER",
-        Task::Fetch => b"MINE QUAD",
+    let craft: &'static [u8] = match (task_of(level), chain(level)) {
+        (Task::Fpv | Task::Nest | Task::Dart, _) => b"KAMIKAZE",
+        (Task::Guide | Task::Column | Task::Rush | Task::Push | Task::Bend, _) => b"SPOTTER",
+        (Task::Fetch, _) => b"MINE QUAD",
+        (_, Some(card)) => match card.mode {
+            Mode::Fpv => b"KAMIKAZE",
+            Mode::Guide => b"SPOTTER",
+            _ if matches!(stage_task(level, 0), Task::Fetch) => b"MINE QUAD",
+            _ => b"RECON QUAD",
+        },
         _ => b"RECON QUAD",
     };
     let sight: &'static [u8] = match sensor {
@@ -114,6 +120,9 @@ fn mission_brief(
         Task::Drift => (b"1 TRUCK AND THREE MEN", b"2 BOMB THE TRUCK"),
         Task::Thaw => (b"1 TANKS AND FOUR MEN", b"2 MINES THEN THE GUN"),
         Task::Hearth => (b"1 OFFICER AND FOUR", b"2 STAY ABOVE 20"),
+        Task::Scout | Task::Battery | Task::Chain => {
+            chain(level).map_or((b"", b""), |card| card.order)
+        }
     };
     (craft, sight, order, note)
 }
@@ -150,6 +159,9 @@ fn mission_title(level: u8) -> (&'static [u8], &'static [u8]) {
         Task::Drift => (b"SNOW", b"ROAD"),
         Task::Thaw => (b"MUD", b"IRON"),
         Task::Hearth => (b"PINE", b"POST"),
+        Task::Scout | Task::Battery | Task::Chain => {
+            chain(level).map_or((b"", b""), |card| card.title)
+        }
     }
 }
 
@@ -254,6 +266,7 @@ pub(crate) fn mission_card(level: u8) -> &'static Sprite {
         Task::Drift => sprites::LVL_CONVOY.sprite(0),
         Task::Thaw => sprites::LVL_ARMOR.sprite(0),
         Task::Hearth => sprites::LVL_OFFICER.sprite(0),
+        Task::Scout | Task::Battery | Task::Chain => sprites::LVL_GATE.sprite(0),
     }
 }
 
@@ -347,6 +360,11 @@ pub(crate) fn show_small(frame: &mut agb::display::GraphicsFrame, text: &[u8], y
 
 /// Title card. The name is drawn first, so it sits on the photograph.
 pub(crate) fn draw_studio(frame: &mut agb::display::GraphicsFrame, age: i32) {
+    // The photograph is twelve 64x64 blocks, most of sprite memory. Load it
+    // before the letters, or they take the gaps the blocks need.
+    for index in 0..12 {
+        let _ = vram(sprites::TITLE.sprite(index));
+    }
     show_face(frame, b"DRONE", 0);
     if (age / 28).rem_euclid(2) == 0 {
         show_face(frame, b"PRESS START", 124);

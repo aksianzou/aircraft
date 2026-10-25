@@ -1,6 +1,6 @@
 # Campaign notes
 
-Read from the code, not from a playthrough. The number on the card is the level index plus one. All 30 cards are meant to be clearable. An extra miss can drop the third star and still leave the clear.
+Read from the code, not from a playthrough. The numbers below are the first thirty cards' own numbers, which the save keeps; the briefing now numbers the campaign in order, with ten stage cards between them (see the guide). All 40 cards are meant to be clearable. An extra miss can drop the third star and still leave the clear.
 
 Loadout is **bombs / shells / mines / VOG**. The gun is unlimited and does not count as a release. Spotter, kamikaze, and mine-haul cards carry no stores: the tool is the mark, the drone, or a mine from the cache.
 

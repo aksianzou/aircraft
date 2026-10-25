@@ -193,10 +193,27 @@ pub(crate) fn draw_drill(
     eye: &Eye,
     cockpit: bool,
 ) {
-    if !matches!(task_of(world.level), Task::Gate) || world.lesson >= 2 || world.falling {
+    if world.falling {
+        return;
+    }
+    for (_, (x, y)) in world.scout_marks() {
+        show_brackets(frame, eye, x, y, cockpit);
+    }
+    if !matches!(world.task(), Task::Gate) || world.lesson >= 2 {
         return;
     }
     let (x, y) = world.drill_mark();
+    show_brackets(frame, eye, x, y, cockpit);
+}
+
+/// Four corners on the ground around a mark to fly over.
+fn show_brackets(
+    frame: &mut agb::display::GraphicsFrame,
+    eye: &Eye,
+    x: i32,
+    y: i32,
+    cockpit: bool,
+) {
     let Some((sx, sy)) = eye.project(x, y, 0) else {
         return;
     };
@@ -369,8 +386,7 @@ pub(crate) fn draw_aa_lanes(
     inst_y: i32,
 ) {
     let Eye { sin_r, cos_r, .. } = *eye;
-    let guns = aa_guns(task_of(world.level));
-    if guns.is_empty() || !guns_see(world.alt >> 8) {
+    if aa_guns(world.level).is_empty() || !guns_see(world.alt >> 8) {
         return;
     }
     let samples = [
@@ -385,7 +401,7 @@ pub(crate) fn draw_aa_lanes(
     ];
     for (rx, ry) in samples {
         let (wx, wy) = lane_world(world.x, world.y, sin_r, cos_r, rx, ry);
-        if aa_covers(guns, wx, wy) {
+        if world.guns_cover(wx, wy) {
             continue;
         }
         show_dot(frame, 1, radar_x, inst_y, rx, ry);
@@ -403,7 +419,7 @@ pub(crate) fn draw_radar_goals(
     let Eye { sin_r, cos_r, .. } = *eye;
     let mut pts = [(0i32, 0i32); 3];
     let n = goal_points(world, &mut pts);
-    if matches!(task_of(world.level), Task::Fetch) && !world.cargo {
+    if matches!(world.task(), Task::Fetch) && !world.cargo {
         for cache in &world.caches {
             if !cache.alive {
                 continue;
@@ -417,7 +433,7 @@ pub(crate) fn draw_radar_goals(
             show_dot(frame, 0, radar_x, inst_y, bx, by);
         }
     }
-    if matches!(task_of(world.level), Task::Fetch) {
+    if matches!(world.task(), Task::Fetch) {
         for &(tx, ty) in charge_spots(world.level) {
             let (bx, by) = radar_blip(
                 delta(tile_mid(tx), world.x),
@@ -448,21 +464,22 @@ pub(crate) fn draw_radar_goals(
         let (bx, by) = radar_blip(delta(px, world.x), delta(py, world.y), sin_r, cos_r);
         show_dot(frame, 0, radar_x, inst_y, bx, by);
     }
-    if matches!(task_of(world.level), Task::Convoy) {
-        let mx = tile_mid(0);
-        let my = tile_mid(4);
+    if matches!(world.task(), Task::Convoy) {
+        let (lx, ly) = world.convoy_line();
+        let mx = tile_mid(lx);
+        let my = tile_mid(ly);
         let (bx, by) = radar_blip(delta(mx, world.x), delta(my, world.y), sin_r, cos_r);
         show_dot(frame, 1, radar_x, inst_y, bx, by);
     }
-    if matches!(task_of(world.level), Task::Cover) {
+    if matches!(world.task(), Task::Cover) {
         let mx = tile_mid(24);
         let my = tile_mid(14);
         let (bx, by) = radar_blip(delta(mx, world.x), delta(my, world.y), sin_r, cos_r);
         show_dot(frame, 1, radar_x, inst_y, bx, by);
     }
-    if matches!(task_of(world.level), Task::Rush | Task::Push) {
+    if matches!(world.task(), Task::Rush | Task::Push) {
         let mx = tile_mid(24);
-        let my = tile_mid(14);
+        let my = tile_mid(world.rush_line());
         let (bx, by) = radar_blip(delta(mx, world.x), delta(my, world.y), sin_r, cos_r);
         show_dot(frame, 1, radar_x, inst_y, bx, by);
     }
@@ -479,7 +496,7 @@ pub(crate) fn draw_radar_goals(
 }
 
 pub(crate) fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
-    match task_of(world.level) {
+    match world.task() {
         Task::Trench | Task::Officer | Task::Pits | Task::Grove | Task::Hearth => {
             nearest_marked(world, pts, true, false)
         }
@@ -531,7 +548,8 @@ pub(crate) fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
             if world.targets <= 0 {
                 return 0;
             }
-            pts[0] = (tile_mid(23), (16 * 8 + 8) << 8);
+            let (hx, hy) = world.hq_corner();
+            pts[0] = (tile_mid(hx + 1), (hy * 8 + 8) << 8);
             1
         }
         Task::Fpv => nearest_marked(world, pts, true, false),
@@ -550,7 +568,27 @@ pub(crate) fn goal_points(world: &World, pts: &mut [(i32, i32); 3]) -> usize {
                 0
             }
         }
-        Task::Swarm => 0,
+        Task::Swarm | Task::Chain => 0,
+        Task::Scout => {
+            let mut n = 0;
+            for (_, point) in world.scout_marks() {
+                if n < 3 {
+                    pts[n] = point;
+                    n += 1;
+                }
+            }
+            n
+        }
+        Task::Battery => {
+            let mut n = 0;
+            for (index, gun) in aa_guns(world.level).iter().enumerate() {
+                if world.gun_up(index) && n < 3 {
+                    pts[n] = gun_at(gun);
+                    n += 1;
+                }
+            }
+            n
+        }
     }
 }
 
@@ -650,13 +688,20 @@ pub(crate) fn draw_hud(frame: &mut agb::display::GraphicsFrame, world: &World, b
         show(frame, sprites::LBL_DRONE.sprite(0), 160, 0);
         draw_readout(frame, world.drones, 1, 176, 0, blind);
     }
-    if matches!(task_of(world.level), Task::Gate) && world.targets > 0 {
+    if matches!(world.task(), Task::Gate) && world.targets > 0 {
         let line: &[u8] = match world.lesson {
             0 => b"SELECT OVER MARK",
             1 => b"B DROP THE BOMB",
             _ => b"FLY THE GAP",
         };
         show_small(frame, line, 148);
+    }
+    // A stage card names the stage in hand while it is new.
+    if world.cue > 0
+        && world.targets > 0
+        && let Some(stage) = world.stage_now()
+    {
+        show_small(frame, stage.line, 148);
     }
     // How many mission marks are still left.
     show(frame, sprites::DOT.sprite(0), WIDTH - 28, 72);

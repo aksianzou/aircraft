@@ -345,6 +345,35 @@ def bunker():
     return m
 
 
+DRUM = Material(*OLIVE)
+HOOP = Material(OLIVE[2], OLIVE_DEEP, "181810")
+LID = Material(*CONCRETE)
+
+
+def drums():
+    """A fuel dump: four drums on end with a gap between them, pale lids up,
+    and a fifth lying in front."""
+    m = Model(19, 19, 10)
+
+    def drum(cx, cy):
+        for x in range(int(cx) - 4, int(cx) + 5):
+            for y in range(int(cy) - 4, int(cy) + 5):
+                d = math.hypot(x + 0.5 - cx, y + 0.5 - cy)
+                if d > 3.1:
+                    continue
+                for z in range(0, 9):
+                    m.cells[(x, y, z)] = HOOP if z in (2, 5) else DRUM
+                m.cells[(x, y, 9)] = HOOP if d > 2.4 else LID
+
+    for cx, cy in ((4.0, 10.0), (13.0, 10.0), (4.0, 17.0), (13.0, 17.0)):
+        drum(cx + 0.5, cy - 1.5)
+    # The one on its side, rolled out in front.
+    m.wheel(4, 14, 2.6, 2.6, 2.6, DRUM)
+    m.paint(6, 0, 0, 7, 6, 6, HOOP).paint(11, 0, 0, 12, 6, 6, HOOP)
+    m.paint(4, 0, 0, 5, 6, 6, LID)
+    return m
+
+
 SKIN = Material("d8c8c0", "b89890", "a08078")
 CLOTH = Material(*OLIVE)
 TROUSER = Material(OLIVE[1], OLIVE[2], OLIVE_DEEP)
@@ -402,6 +431,8 @@ SHEETS = {
     "soldier": (soldier, (32, 32), FAR, 1.0, 26),
     "soldier_near": (soldier, (32, 64), [(o, LEVEL) for o in (0, 2, 4, 6)], 2.45, 61),
     "soldier_top": (soldier, (32, 32), TOP, 1.0, 16),
+    "drums": (drums, (32, 32), FAR, 1.0, 24),
+    "drums_top": (drums, (32, 32), TOP, 1.0, 16),
 }
 
 # Cells after the sheet's own: [(model, octant, elevation)]. The soldier's

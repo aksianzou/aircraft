@@ -42,6 +42,8 @@ include_aseprite!(
     32x32 "gfx/tank_top.png",
     32x32 "gfx/truck_top.png",
     32x32 "gfx/bunker_top.png",
+    32x32 "gfx/drums.png",
+    32x32 "gfx/drums_top.png",
     32x32 "gfx/bunker.png",
     64x32 "gfx/bunker_near.png",
     32x32 "gfx/soldier.png",
@@ -239,9 +241,10 @@ fn main(mut gba: agb::Gba) -> ! {
                 pick_hold = 0;
                 Tri::Zero
             };
+            let slot = slot_of(progress.level);
             let picked = match step {
-                Tri::Positive if progress.level < progress.unlocked => Some(progress.level + 1),
-                Tri::Negative if progress.level > 0 => Some(progress.level - 1),
+                Tri::Positive if slot < progress.unlocked => Some(card_at(slot + 1)),
+                Tri::Negative if slot > 0 => Some(card_at(slot - 1)),
                 _ => None,
             };
             if let Some(level) = picked {
@@ -295,8 +298,9 @@ fn main(mut gba: agb::Gba) -> ! {
                     phase = Phase::Title;
                 }
                 Phase::Win => {
-                    let next = if world.level < progress.unlocked {
-                        world.level + 1
+                    let slot = slot_of(world.level);
+                    let next = if slot < progress.unlocked {
+                        card_at(slot + 1)
                     } else {
                         world.level
                     };
@@ -338,15 +342,15 @@ fn main(mut gba: agb::Gba) -> ! {
                 let restart = world.again;
                 if world.targets <= 0 {
                     tone(&mut mixer, CLEAR_SFX);
-                    progress.cleared |= 1u32 << world.level;
+                    progress.cleared |= 1u64 << world.level;
                     progress.keep_marks(world.level, earned_marks(&world));
-                    if world.level + 1 < LEVEL_COUNT {
-                        progress.unlocked = progress.unlocked.max(world.level + 1);
+                    if !last_card(world.level) {
+                        progress.unlocked = progress.unlocked.max(slot_of(world.level) + 1);
                     }
                     store_progress(&progress);
                     world.bloom = 0;
                     phase = Phase::Win;
-                    if world.level + 1 >= LEVEL_COUNT {
+                    if last_card(world.level) {
                         splash_age = 0;
                     }
                 } else if world.crashed {
@@ -380,7 +384,7 @@ fn main(mut gba: agb::Gba) -> ! {
 
         // Ahead of the floor build. A second fill before vblank covers a long
         // frame, which otherwise replays a slice of the music.
-        let ending = phase == Phase::Win && world.level + 1 >= LEVEL_COUNT;
+        let ending = phase == Phase::Win && last_card(world.level);
         if ending != end_tune {
             if let Some(id) = music_id.take()
                 && let Some(channel) = mixer.channel(&id)
@@ -427,7 +431,7 @@ fn main(mut gba: agb::Gba) -> ! {
                 &mut frame,
                 picked,
                 progress.mark_row(picked),
-                (picked > 0, picked < progress.unlocked),
+                (slot_of(picked) > 0, slot_of(picked) < progress.unlocked),
                 card_age,
                 sensor,
                 if glass_open(&progress, picked) {
@@ -445,7 +449,7 @@ fn main(mut gba: agb::Gba) -> ! {
             }
             continue;
         }
-        if phase == Phase::Win && world.level + 1 >= LEVEL_COUNT {
+        if phase == Phase::Win && last_card(world.level) {
             splash_age += 1;
             gfx.set_background_palette_colour_256(0, Rgb::new(0, 0, 0).to_rgb15());
             let mut frame = gfx.frame();

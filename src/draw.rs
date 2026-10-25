@@ -286,6 +286,38 @@ pub(crate) fn show_fit(
         .show(frame);
 }
 
+/// Fire past its 16-pixel art. The double-size box holds up to 32, and the
+/// size goes in steps of four so neighbouring fires share a matrix.
+pub(crate) fn show_blaze(
+    frame: &mut agb::display::GraphicsFrame,
+    sprite: &'static Sprite,
+    sx: i32,
+    sy: i32,
+    pixels: i32,
+) {
+    let pixels = (pixels & !3).clamp(8, 32);
+    let double = pixels > 16;
+    let mode = if double {
+        AffineMode::AffineDouble
+    } else {
+        AffineMode::Affine
+    };
+    let half = if double { 16 } else { 8 };
+    let (x, y) = (sx - half, sy - half);
+    if x < -32 || y < -32 || x > WIDTH || y > HEIGHT {
+        return;
+    }
+    let inv = Num::<i32, 8>::new(16) / Num::new(pixels);
+    let mut object = ObjectAffine::new(vram(sprite), scale_matrix(inv, inv), mode);
+    if let Some(palette) = dye(sprite, glass_now()) {
+        object.set_palette(palette);
+    }
+    object
+        .set_pos((x, y))
+        .set_priority(Priority::P0)
+        .show(frame);
+}
+
 pub(crate) fn isqrt64(n: i64) -> i64 {
     if n <= 0 {
         return 0;

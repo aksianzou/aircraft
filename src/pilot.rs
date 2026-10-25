@@ -14,6 +14,10 @@ const BUNKER: u8 = 3;
 const FOE: u8 = 4;
 const ROOF: u8 = 5;
 const CACHE: u8 = 6;
+/// A scout mark to fly over.
+const SPOT: u8 = 7;
+/// A battery to knock out from above its height.
+const GUN: u8 = 8;
 
 #[derive(Clone, Copy)]
 enum Style {
@@ -51,10 +55,10 @@ struct Report {
     spent: i16,
 }
 
-pub(crate) fn survey(floor: &mut AffineBackground) -> (u32, u32) {
-    let mut cleared = 0u32;
-    let mut starred = 0u32;
-    for level in 0..LEVEL_COUNT {
+pub(crate) fn survey(floor: &mut AffineBackground) -> (u64, u64) {
+    let mut cleared = 0u64;
+    let mut starred = 0u64;
+    for level in ORDER {
         let styles = styles_for(level);
         let mut any = false;
         let mut full = false;
@@ -62,7 +66,7 @@ pub(crate) fn survey(floor: &mut AffineBackground) -> (u32, u32) {
             let report = play(floor, level, *style);
             agb::println!(
                 "{:02} {} {} {} {}* {} left {} {} spent {} age {}",
-                level + 1,
+                slot_of(level) + 1,
                 card_name(level),
                 style_name(*style),
                 if report.clear { "clear" } else { "FAIL" },
@@ -117,6 +121,14 @@ pub(crate) fn fly_for(
 }
 
 fn styles_for(level: u8) -> &'static [Style] {
+    if let Some(card) = chain(level) {
+        return match card.mode {
+            Mode::Fpv => &[Style::Ram],
+            Mode::Guide => &[Style::Mark],
+            _ if matches!(stage_task(level, 0), Task::Fetch) => &[Style::Haul],
+            _ => &[Style::Deck, Style::Cruise],
+        };
+    }
     match task_of(level) {
         Task::Gate => &[Style::Gap],
         Task::Fpv | Task::Nest | Task::Dart => &[Style::Ram],
@@ -135,7 +147,7 @@ fn play(floor: &mut AffineBackground, level: u8, style: Style) -> Report {
     }
     let mut input = ButtonController::new();
     let mut still = 0i16;
-    let extra = if matches!(task_of(level), Task::Fetch) {
+    let extra = if matches!(stage_task(level, 0), Task::Fetch) {
         2500
     } else {
         1800
@@ -204,6 +216,10 @@ fn star_gap(world: &World) -> &'static str {
 fn stick(world: &World, style: Style, still: &mut i16) -> ButtonState {
     let mut press = ButtonState::empty();
     let aim = nearest(world);
+    if let Some(spot) = aim.as_ref().filter(|aim| aim.kind == SPOT) {
+        scout(world, spot, &mut press);
+        return press;
+    }
     match style {
         Style::Gap => gap(world, &mut press),
         Style::Haul => haul(world, &mut press),
@@ -251,7 +267,7 @@ fn stick(world: &World, style: Style, still: &mut i16) -> ButtonState {
         && aim
             .as_ref()
             .is_some_and(|aim| world.arm != arm_for(world, aim.kind))
-        && !matches!(task_of(world.level), Task::Swarm)
+        && !matches!(world.task(), Task::Swarm)
         && let Some(aim) = aim.as_ref()
         && arm_for(world, aim.kind) != world.arm
     {
@@ -269,28 +285,24 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     let alt = world.alt >> 8;
     // Only the trucks that can end the card. A pacing truck still wants the
     // short stop that clears the lane.
-    let driving = aim.kind == TRUCK
-        && matches!(
-            task_of(world.level),
-            Task::Convoy | Task::Drift | Task::Cover
-        );
+    let driving =
+        aim.kind == TRUCK && matches!(world.task(), Task::Convoy | Task::Drift | Task::Cover);
     // Hover slide is slower than a driving truck, so these are caught at
     // cruise speed and stopped only once the lead is already under the nose.
-    let lane = matches!(task_of(world.level), Task::Lane);
+    let lane = matches!(world.task(), Task::Lane);
     let chasing = lane || driving;
     let hatch = aim.kind == TANK;
-    let guns = aa_guns(task_of(world.level));
-    let watched = !guns.is_empty() && aa_covers(guns, aim.x, aim.y);
-    let in_guns = !guns.is_empty() && aa_covers(guns, world.x, world.y);
+    let guns = aa_guns(world.level);
+    let watched = world.guns_cover(aim.x, aim.y);
+    let in_guns = world.guns_cover(world.x, world.y);
     // The mud men are two drops beside the truck. Anywhere else, infantry
     // shoots back under twenty.
-    let low_men = aim.kind == MAN && matches!(task_of(world.level), Task::Drift);
-    let post = matches!(task_of(world.level), Task::Hearth) && aim.kind == MAN;
+    let low_men = aim.kind == MAN && matches!(world.task(), Task::Drift);
+    // The post's watch, and a battery, fire under 20. The pass stays above it.
+    let post = (matches!(world.task(), Task::Hearth) && aim.kind == MAN) || aim.kind == GUN;
     let safe = if lane || (watched && !hatch) || (hatch && in_guns) {
         22
-    } else if hatch
-        && body > 200 * 200
-        && (!guns.is_empty() || matches!(task_of(world.level), Task::Thaw))
+    } else if hatch && body > 200 * 200 && (!guns.is_empty() || matches!(world.task(), Task::Thaw))
     {
         // High over the lane, and over the mud. The dive starts close to the tank.
         22
@@ -316,7 +328,7 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     let slop = drop_slop(aim.kind, alt);
     let reach = if low_men {
         36
-    } else if matches!(aim.kind, BUNKER | ROOF | TANK | MAN | TRUCK) {
+    } else if matches!(aim.kind, BUNKER | ROOF | TANK | MAN | TRUCK | GUN) {
         72
     } else {
         32
@@ -359,7 +371,7 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     }
     // The escort is faster than a hover. The bomb has to leave while the
     // quad is still flying, or the truck is gone before the nose is steady.
-    if matches!(task_of(world.level), Task::Cover)
+    if matches!(world.task(), Task::Cover)
         && aim.kind == TRUCK
         && !world.hover
         && (8..=14).contains(&alt)
@@ -380,9 +392,9 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
     // A mine or a grenade only counts the first frame of a held button.
     if on_top {
         *still = still.saturating_add(1);
-        let snap = matches!(task_of(world.level), Task::Cover);
+        let snap = matches!(world.task(), Task::Cover);
         let charge = world.arm == ARM_MINE;
-        let thaw = matches!(task_of(world.level), Task::Thaw);
+        let thaw = matches!(world.task(), Task::Thaw);
         // Two hull mines finish a tank. A later pulse on the mud leaves
         // while those two are still falling. The other armour cards need
         // that later pulse: the first two do not always land.
@@ -404,7 +416,7 @@ fn deck(world: &World, aim: &Aim, still: &mut i16, press: &mut ButtonState) {
 }
 
 fn cruise(world: &World, aim: &Aim, press: &mut ButtonState) {
-    let want = if aa_guns(task_of(world.level)).is_empty() {
+    let want = if aa_guns(world.level).is_empty() {
         (world.pad_alt >> 8).clamp(12, 16)
     } else {
         22
@@ -466,7 +478,7 @@ fn pursuit(world: &World, aim: Option<&Aim>, want_alt: i32, press: &mut ButtonSt
     if aim.kind == FOE {
         let floor = if defend_card(world.level) {
             20
-        } else if matches!(task_of(world.level), Task::Cover) {
+        } else if matches!(world.task(), Task::Cover) {
             22
         } else {
             19
@@ -474,12 +486,12 @@ fn pursuit(world: &World, aim: Option<&Aim>, want_alt: i32, press: &mut ButtonSt
         let alt = world.alt >> 8;
         if alt < floor
             || alt > floor + 4
-            || (matches!(task_of(world.level), Task::Cover) && alt <= floor + 1)
+            || (matches!(world.task(), Task::Cover) && alt <= floor + 1)
         {
             pitch_toward(world, floor, press);
         }
         // The escorts sit on the truck's height. Climb clear of them first.
-        if matches!(task_of(world.level), Task::Cover) && alt < floor {
+        if matches!(world.task(), Task::Cover) && alt < floor {
             return;
         }
         let on = aim_flat(world, aim.x, aim.y, foe_z(world, aim), floor, press);
@@ -492,6 +504,13 @@ fn pursuit(world: &World, aim: Option<&Aim>, want_alt: i32, press: &mut ButtonSt
     if on || world.foe_under_sight().is_some() || world.man_under_sight().is_some() {
         press_hold(press, Button::B);
     }
+}
+
+/// Over the mark at the scout's height, out of the hover so the pass keeps its speed.
+fn scout(world: &World, spot: &Aim, press: &mut ButtonState) {
+    want_hover(world, false, press);
+    face(world, spot.x, spot.y, press);
+    pitch_toward(world, SCOUT_ALT - 4, press);
 }
 
 fn gap(world: &World, press: &mut ButtonState) {
@@ -730,7 +749,22 @@ fn nearest(world: &World) -> Option<Aim> {
         return Some(aim);
     }
     let mut best: Option<(i32, Aim)> = None;
-    let task = task_of(world.level);
+    let task = world.task();
+    if matches!(task, Task::Scout) {
+        for (_, (x, y)) in world.scout_marks() {
+            keep(&mut best, world, x, y, 0, 0, SPOT);
+        }
+        return best.map(|(_, aim)| aim);
+    }
+    if matches!(task, Task::Battery) {
+        for (index, gun) in aa_guns(world.level).iter().enumerate() {
+            if world.gun_up(index) {
+                let (x, y) = gun_at(gun);
+                keep(&mut best, world, x, y, 0, 0, GUN);
+            }
+        }
+        return best.map(|(_, aim)| aim);
+    }
     if matches!(task, Task::Hq)
         && let Some((x, y)) = roof(world)
     {
@@ -801,7 +835,7 @@ fn nearest(world: &World) -> Option<Aim> {
 
 /// A truck that is running out of road is the only thing that matters.
 fn fleeing(world: &World) -> Option<Aim> {
-    let task = task_of(world.level);
+    let task = world.task();
     let line = match task {
         Task::Convoy | Task::Drift | Task::Cover => 80,
         _ => return None,
@@ -832,8 +866,9 @@ fn roof(world: &World) -> Option<(i32, i32)> {
     let mut sx = 0i64;
     let mut sy = 0i64;
     let mut n = 0i64;
-    for ty in 16..=17 {
-        for tx in 22..=24 {
+    let (hx, hy) = world.hq_corner();
+    for ty in hy..=hy + 1 {
+        for tx in hx..=hx + 2 {
             if world.ground_at(tx, ty) == T_CRATER {
                 continue;
             }
@@ -900,10 +935,10 @@ fn armor_counts(task: Task) -> bool {
 }
 
 fn man_vel(world: &World, soldier: &Soldier) -> (i32, i32) {
-    if soldier.objective && matches!(task_of(world.level), Task::Rush | Task::Push) {
+    if soldier.objective && matches!(world.task(), Task::Rush | Task::Push) {
         (0, -rush_step(world.level))
     } else if matches!(
-        task_of(world.level),
+        world.task(),
         Task::Fpv | Task::Nest | Task::Grove | Task::Thaw | Task::Hearth | Task::Pits
     ) {
         (0, 0)
@@ -913,7 +948,7 @@ fn man_vel(world: &World, soldier: &Soldier) -> (i32, i32) {
 }
 
 fn truck_vel(world: &World, truck: &Truck) -> (i32, i32) {
-    if truck.objective && matches!(task_of(world.level), Task::Push) {
+    if truck.objective && matches!(world.task(), Task::Push) {
         return (0, -rush_step(world.level));
     }
     let guide = world.mode == Mode::Guide;
@@ -958,7 +993,7 @@ fn arm_for(world: &World, kind: u8) -> u8 {
                 ARM_BOMB
             }
         }
-        TRUCK => ARM_BOMB,
+        TRUCK | GUN => ARM_BOMB,
         TANK => {
             if world.mines > 0 {
                 ARM_MINE
@@ -1020,6 +1055,7 @@ fn drop_slop(kind: u8, alt_px: i32) -> i32 {
         TRUCK => 10,
         BUNKER => 16,
         ROOF => 12,
+        GUN => 12,
         MAN => 8,
         _ => 8,
     };
@@ -1120,7 +1156,9 @@ fn card_name(level: u8) -> &'static str {
         27 => "ROAD",
         28 => "IRON",
         29 => "POST",
-        _ => "?",
+        _ => chain(level).map_or("?", |card| {
+            core::str::from_utf8(card.title.1).unwrap_or("?")
+        }),
     }
 }
 
@@ -1130,36 +1168,7 @@ fn campaign_sorties(_gba: &mut agb::Gba) {
     let (cleared, starred) = survey(floor);
     // Cards a stick pilot has already cleared. A miss here is a regression.
     // The other lines in the log are the sorts the pilot does not finish.
-    let proved = (1 << 0)
-        | (1 << 1)
-        | (1 << 2)
-        | (1 << 3)
-        | (1 << 4)
-        | (1 << 5)
-        | (1 << 6)
-        | (1 << 7)
-        | (1 << 8)
-        | (1 << 9)
-        | (1 << 10)
-        | (1 << 11)
-        | (1 << 12)
-        | (1 << 13)
-        | (1 << 14)
-        | (1 << 15)
-        | (1 << 16)
-        | (1 << 17)
-        | (1 << 18)
-        | (1 << 19)
-        | (1 << 20)
-        | (1 << 21)
-        | (1 << 22)
-        | (1 << 23)
-        | (1 << 24)
-        | (1 << 25)
-        | (1 << 26)
-        | (1 << 27)
-        | (1 << 28)
-        | (1 << 29);
+    let proved = (1u64 << LEVEL_COUNT) - 1;
     let missed = proved & !cleared;
     assert!(missed == 0, "regressed cards {missed:#x}");
     let short = proved & !starred;

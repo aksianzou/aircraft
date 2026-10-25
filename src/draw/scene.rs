@@ -616,6 +616,153 @@ pub(crate) fn show_bunker(
     );
 }
 
+/// A fuel dump, from the side it is seen from, like a bunker.
+fn show_drums(
+    frame: &mut agb::display::GraphicsFrame,
+    drum: &Drum,
+    sx: i32,
+    sy: i32,
+    eye: &Eye,
+    sensor: Sensor,
+) {
+    let Eye {
+        horizon,
+        alt,
+        pitch,
+        x: cam_x,
+        y: cam_y,
+        sin_r,
+        cos_r,
+        ..
+    } = *eye;
+    let scale = body_scale(sy, horizon, alt, 12, i32::MAX);
+    let dx = cam_x - drum.x;
+    let dy = cam_y - drum.y;
+    let fx = if dx.abs() * 2 > dy.abs() {
+        dx.signum()
+    } else {
+        0
+    };
+    let fy = if dy.abs() * 2 > dx.abs() {
+        dy.signum()
+    } else {
+        0
+    };
+    let (fx, fy) = if fx == 0 && fy == 0 { (0, 1) } else { (fx, fy) };
+    let oct = heading_octant(fx * sin_r - fy * cos_r, fx * cos_r + fy * sin_r);
+    let pitched = pitch.sin().to_raw() >= 100;
+    let (sprite, ink, foot) = if scale.plan {
+        (sprites::DRUMS_TOP.sprite(oct), 19, 16)
+    } else {
+        let index = level_octant(oct) + if pitched { 8 } else { 0 };
+        (sprites::DRUMS.sprite(index), 14, 26)
+    };
+    show_figure(
+        frame,
+        sprite,
+        (sx, sy),
+        Art {
+            w: 32,
+            h: 32,
+            ink,
+            foot,
+        },
+        scale.span,
+        scale.plan,
+        Coat::of(sensor, false),
+    );
+    show_shadow(
+        frame,
+        eye,
+        (sx, sy),
+        scale.span * 6 / 8,
+        scale.plan,
+        sensor,
+        8,
+    );
+}
+
+/// Directions of the dust ring a ground blast throws out, in eighths.
+const RING: [(i32, i32); 6] = [(8, 0), (4, 7), (-4, 7), (-8, 0), (-4, -7), (4, -7)];
+
+/// The blast's push across the ground: six puffs running out from it.
+fn show_ring(
+    frame: &mut agb::display::GraphicsFrame,
+    eye: &Eye,
+    boom: &Boom,
+    cockpit: bool,
+    sensor: Sensor,
+) {
+    if !matches!(sensor, Sensor::Day | Sensor::Winter)
+        || nadir_on() > 0
+        || boom.z > 2 << 8
+        || !(1..=10).contains(&boom.frame)
+    {
+        return;
+    }
+    let reach = i32::from(boom.radius) * i32::from(boom.frame) / 8;
+    let puff = (boom.frame as usize / 4).min(2);
+    for (rx, ry) in RING {
+        let x = boom.x + ((rx * reach) << 5);
+        let y = boom.y + ((ry * reach) << 5);
+        let Some((sx, sy)) = eye.project(x, y, 0) else {
+            continue;
+        };
+        if !in_view(sx, sy, cockpit) {
+            continue;
+        }
+        let pixels = (ground_span((sy - eye.horizon).max(1), eye.alt, 8) & !3).clamp(4, 16);
+        let inv = Num::<i32, 8>::new(16) / Num::new(pixels);
+        ObjectAffine::new(
+            vram(sprites::DUST.sprite(puff)),
+            scale_matrix(inv, inv),
+            AffineMode::Affine,
+        )
+        .set_pos((sx - 8, sy - 8 - pixels / 4))
+        .set_priority(Priority::P0)
+        .show(frame);
+    }
+}
+
+/// A wreck still on fire: flames on it, and smoke climbing off it in puffs
+/// that grow as they rise. The fire goes out first, the smoke a while later.
+fn show_burning(
+    frame: &mut agb::display::GraphicsFrame,
+    eye: &Eye,
+    husk: &Husk,
+    (sx, sy): (i32, i32),
+    span: i32,
+    age: i32,
+    cockpit: bool,
+) {
+    let plan = on_plan(eye.horizon);
+    if husk.burn > 90 {
+        let flame = (span * 2 / 3).clamp(8, 24);
+        let lick = 1 + ((age / 5) & 1) as usize;
+        show_blaze(frame, sprites::BOOM.sprite(lick), sx, sy - flame / 3, flame);
+    }
+    let phase = age.rem_euclid(48);
+    let puff = (span * (16 + phase) / 24 + 4).clamp(8, 32) & !7;
+    let lift = if plan {
+        0
+    } else {
+        span / 2 + span * phase / 20
+    };
+    if !in_view(sx, sy - lift, cockpit) {
+        return;
+    }
+    let sheet = if phase < 24 { 1 } else { 2 };
+    show_marked(
+        frame,
+        sprites::SMOKE.sprite(sheet),
+        32,
+        sx,
+        sy - lift,
+        puff,
+        Tone::Ash,
+    );
+}
+
 /// Flat contact mark. It sits off the feet, away from the sun or the moon.
 /// `lift` is 8 on the ground and longer while the body is in the air.
 /// `width` is the shadow across, in pixels, before the clamp.
@@ -756,6 +903,42 @@ pub(crate) fn draw_world(
         }
         let frame_index = boom_sheet(boom.frame);
         let dist2 = dist2_px(world.x, world.y, boom.x, boom.y);
+        if boom.radius >= 14 && dist2 < 160 * 160 {
+            show_ring(frame, eye, boom, cockpit, sensor);
+        }
+        // A dump, a cook-off or a shell: a ball of fire, not a spark.
+        let big = boom.radius >= 20 && boom.z <= 2 << 8;
+        if big && boom.frame < FIRE && dist2 < 200 * 200 && sy >= floor {
+            let pixels = ground_span((sy - horizon).max(1), world.alt, i32::from(boom.radius));
+            let pixels = pixels.clamp(10, 32);
+            let lift = pixels / 3;
+            let side = (frame_index + 1).min(2);
+            show_blaze(
+                frame,
+                sprites::BOOM.sprite(frame_index),
+                sx,
+                sy - lift,
+                pixels,
+            );
+            show_blaze(
+                frame,
+                sprites::BOOM.sprite(side),
+                sx - pixels / 3,
+                sy - lift / 2,
+                pixels * 3 / 4,
+            );
+            show_blaze(
+                frame,
+                sprites::BOOM.sprite(side),
+                sx + pixels / 3,
+                sy - lift / 2,
+                pixels * 3 / 4,
+            );
+            if boom.frame < 6 {
+                show_spark(frame, sx, sy - lift, cockpit);
+            }
+            continue;
+        }
         // The FPV crash is drawn on the wire frame, in front of the glass.
         if world.mode == Mode::Fpv && dist2 < 48 * 48 {
             continue;
@@ -991,6 +1174,19 @@ pub(crate) fn draw_world(
         }
         show_bunker(frame, bunker, sx, sy, eye, sensor, false);
     }
+    for drum in &world.drums {
+        if !drum.alive {
+            continue;
+        }
+        let Some((sx, sy)) = eye.project(drum.x, drum.y, 0) else {
+            continue;
+        };
+        let drum_px = ground_span((sy - horizon).max(1), world.alt, 12);
+        if !actor_on_glass(sx, sy, drum_px, floor, cockpit) {
+            continue;
+        }
+        show_drums(frame, drum, sx, sy, eye, sensor);
+    }
     draw_husks(frame, world, eye, floor, cockpit, sensor);
     draw_gate(frame, world, eye, cockpit);
     draw_sites(frame, world, eye, cockpit);
@@ -1007,7 +1203,7 @@ fn draw_husks(
     sensor: Sensor,
 ) {
     let Eye { horizon, .. } = *eye;
-    for husk in &world.husks {
+    for (slot, husk) in world.husks.iter().enumerate() {
         if !husk.alive {
             continue;
         }
@@ -1022,6 +1218,18 @@ fn draw_husks(
         let span = ground_span((sy - horizon).max(1), world.alt, tall);
         if !actor_on_glass(sx, sy, span, floor, cockpit) {
             continue;
+        }
+        // Drawn first, so the flames and the smoke sit in front of the hull.
+        if husk.burn > 0 {
+            show_burning(
+                frame,
+                eye,
+                husk,
+                (sx, sy),
+                span,
+                world.age + slot as i32 * 23,
+                cockpit,
+            );
         }
         match husk.kind {
             HUSK_TANK => {
@@ -1550,7 +1758,7 @@ pub(crate) fn draw_gate(
     eye: &Eye,
     cockpit: bool,
 ) {
-    if !matches!(task_of(world.level), Task::Gate) {
+    if !matches!(world.task(), Task::Gate) {
         return;
     }
     let gx = world.gate_x();
@@ -1580,11 +1788,12 @@ pub(crate) fn draw_sites(
     cockpit: bool,
 ) {
     let Eye { horizon, .. } = *eye;
-    let task = task_of(world.level);
+    let task = world.task();
     if matches!(task, Task::Convoy) {
-        for ty in [3, 4] {
+        let (lx, ly) = world.convoy_line();
+        for ty in [ly - 1, ly] {
             let gy = tile_mid(ty);
-            let Some((sx, sy)) = eye.project(tile_mid(0), gy, 0) else {
+            let Some((sx, sy)) = eye.project(tile_mid(lx), gy, 0) else {
                 continue;
             };
             if cockpit && !in_view(sx, sy, true) {
@@ -1606,7 +1815,7 @@ pub(crate) fn draw_sites(
     }
     if matches!(task, Task::Rush | Task::Push) {
         for tx in [8, 24, 40, 56] {
-            let Some((sx, sy)) = eye.project(tile_mid(tx), tile_mid(14), 0) else {
+            let Some((sx, sy)) = eye.project(tile_mid(tx), tile_mid(world.rush_line()), 0) else {
                 continue;
             };
             if cockpit && !in_view(sx, sy, true) {
@@ -1616,8 +1825,9 @@ pub(crate) fn draw_sites(
         }
     }
     if matches!(task, Task::Hq) && world.targets > 0 {
-        let hx = tile_mid(23);
-        let hy = (16 * 8 + 8) << 8;
+        let (corner_x, corner_y) = world.hq_corner();
+        let hx = tile_mid(corner_x + 1);
+        let hy = (corner_y * 8 + 8) << 8;
         let Some((sx, sy)) = eye.project(hx, hy, 0) else {
             return;
         };
@@ -1656,12 +1866,15 @@ pub(crate) fn draw_aa_guns(
     sensor: Sensor,
 ) {
     let Eye { horizon, .. } = *eye;
-    let guns = aa_guns(task_of(world.level));
+    let guns = aa_guns(world.level);
     if guns.is_empty() {
         return;
     }
     let floor = sky_bottom(horizon, world.alt);
-    for gun in guns {
+    for (index, gun) in guns.iter().enumerate() {
+        if !world.gun_up(index) {
+            continue;
+        }
         let (x, y) = gun_at(gun);
         let Some((sx, sy)) = eye.project(x, y, 0) else {
             continue;
