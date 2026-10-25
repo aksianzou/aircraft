@@ -29,8 +29,7 @@ Every sortie opens on a card: the number and name, the aircraft and the glass, t
 ![Day flight to the gate](screens/gate.png)
 
 - **Top line**: score and height. Height matters: charges scatter more the higher they are released, and low passes wake up guns and rifles.
-- **Second line**: what is left of each charge, bombs, `FUGAS` (high explosive), mines and `VOG` grenades.
-- **Left column**: hull strength and its bar, the charge in hand and how many of it remain. Under 40 the glass cracks.
+- **Left column**: hull strength and its bar, the charge in hand and how many of it remain; A cycles through the others to see theirs. Under 40 the glass cracks.
 - **Right column**: battery, signal, and the number of marked targets still standing. The yellow dot is the target counter.
 - **Bottom left**: the attitude indicator.
 - **Bottom right**: the radar. It turns with the aircraft, so ahead is up; targets are dots, and a yellow mark is the base or the posts the card talks about.
