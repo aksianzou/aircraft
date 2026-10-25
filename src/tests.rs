@@ -4,26 +4,38 @@ use agb::interrupt::VBlank;
 
 use super::*;
 
-fn ground() -> AffineBackground {
-    AffineBackground::new(
-        Priority::P1,
-        AffineBackgroundSize::Background64x64,
-        AffineBackgroundWrapBehaviour::Wrap,
-    )
+struct SharedFloor(core::cell::UnsafeCell<Option<AffineBackground>>);
+
+unsafe impl Sync for SharedFloor {}
+
+static FLOOR_LAYER: SharedFloor = SharedFloor(core::cell::UnsafeCell::new(None));
+
+/// One floor layer for every test, as the game has one for its whole run.
+/// agb frees a dropped layer's tiles and hands the slots out again in another
+/// order, and the ground map writes tile `n` as hardware slot `n + 1`.
+pub(crate) fn ground() -> &'static mut AffineBackground {
+    let layer = unsafe { &mut *FLOOR_LAYER.0.get() };
+    layer.get_or_insert_with(|| {
+        AffineBackground::new(
+            Priority::P1,
+            AffineBackgroundSize::Background64x64,
+            AffineBackgroundWrapBehaviour::Wrap,
+        )
+    })
 }
 
 /// A whole clock in the air still leaves the battery star. Hover spends less.
 #[test_case]
 fn flight_spends_more_than_hover(_gba: &mut agb::Gba) {
-    let mut floor = ground();
+    let floor = ground();
     let budget = time_budget(0);
-    let mut flying = World::preview(&mut floor, 0);
+    let mut flying = World::preview(floor, 0);
     flying.hover = false;
     for frame in 0..budget {
         flying.age = frame;
         flying.wear();
     }
-    let mut hovering = World::preview(&mut floor, 0);
+    let mut hovering = World::preview(floor, 0);
     hovering.hover = true;
     for frame in 0..budget {
         hovering.age = frame;
@@ -50,8 +62,8 @@ fn flight_spends_more_than_hover(_gba: &mut agb::Gba) {
 /// The faster truck still has road left after the approach.
 #[test_case]
 fn convoy_has_not_reached_the_mark(_gba: &mut agb::Gba) {
-    let mut floor = ground();
-    let mut world = World::preview(&mut floor, 4);
+    let floor = ground();
+    let mut world = World::preview(floor, 4);
     let start = world.trucks[0].y;
     for _ in 0..300 {
         world.update_trucks();
@@ -136,7 +148,7 @@ fn glass_frame(
     bench: &mut Bench,
 ) {
     forget_sheets();
-    let looking_down = world.hover;
+    let looking_down = world.looking_down();
     set_nadir(if looking_down {
         nadir_scale(world.alt)
     } else {
@@ -151,6 +163,7 @@ fn glass_frame(
         world.alt.max(256),
         world.yaw,
         horizon,
+        world.haze_cell(),
     );
     bench.floor += clock().wrapping_sub(start);
     let sky_h = sky_bottom(horizon, world.alt);
@@ -256,12 +269,6 @@ impl Digest {
         let tile = usize::from(a2 & 0x03FF);
         let bank = usize::from(a2 >> 12);
         let wide = a0 & 0x2000 != 0;
-        // The image converter orders a palette differently on every build, and a
-        // glass bank is a ramp over those indices. Its pixels are named in order
-        // of appearance instead, which keeps the shape and drops the order.
-        let glassed = !wide && glass_banks().contains(&(bank as u8));
-        let mut names = [0u8; 16];
-        let mut named = 0u8;
         for index in 0..w * h {
             let base = 0x0601_0000 + (tile + index * if wide { 2 } else { 1 }) * 32;
             for byte in 0..if wide { 64 } else { 32 } {
@@ -273,13 +280,6 @@ impl Digest {
                 } {
                     if pixel == 0 {
                         self.eat(0x1_0000);
-                    } else if glassed {
-                        let name = &mut names[usize::from(pixel)];
-                        if *name == 0 {
-                            named += 1;
-                            *name = named;
-                        }
-                        self.eat(0x2_0000 | u32::from(*name));
                     } else {
                         let entry = if wide {
                             usize::from(pixel)
@@ -337,14 +337,14 @@ fn flight_glass(gba: &mut agb::Gba) {
     clock_start();
     let mut gfx = gba.graphics.get();
     gfx.set_background_palettes(backgrounds::PALETTES);
-    let mut floor = ground();
+    let floor = ground();
     clear_ground_map();
     for (level, frames) in SHOTS {
         let sensor = sensor_of(level);
         hide_ground();
         let mut hash = Digest(0x811C_9DC5);
         let mut bench = Bench::default();
-        let world = crate::pilot::fly_for(&mut floor, level, frames, &mut |world, floor| {
+        let world = crate::pilot::fly_for(floor, level, frames, &mut |world, floor| {
             glass_frame(&mut gfx, world, floor, sensor, &mut bench);
             hash.eat_picture();
             let mut starts = [(0u16, 0u32); 128];
@@ -486,4 +486,100 @@ fn division_matches(_gba: &mut agb::Gba) {
         }
     }
     agb::println!("division checked on {} pairs", pairs);
+}
+
+/// Every cell of the ground window holds its own tile. A byte store to
+/// background VRAM writes the whole halfword, and once wrote each tile over
+/// its neighbour.
+#[test_case]
+fn ground_map_holds_each_tile(_gba: &mut agb::Gba) {
+    let floor = ground();
+    let mut world = World::preview(floor, 2);
+    while !world.boot_ready() {
+        world.boot_step(floor, 24, &mut || {});
+    }
+    let (tx, ty) = (tile_of(world.x), tile_of(world.y));
+    for y in ty - 20..ty + 20 {
+        for x in tx - 20..tx + 20 {
+            let cell = (y.rem_euclid(VIEW) * VIEW + x.rem_euclid(VIEW)) as usize;
+            let held = unsafe { ((0x0600_C000 + cell) as *const u8).read_volatile() };
+            assert!(held == world.ground_at(x, y) + 1, "cell {x},{y}");
+        }
+    }
+}
+
+/// The pictures in docs/GUIDE.md: the cards, then each kind of sortie a
+/// stretch into the pilot's flight. Only with `--features screens`.
+#[cfg(feature = "screens")]
+#[test_case]
+fn guide_screens(gba: &mut agb::Gba) {
+    const FLIGHTS: [(u8, i32, &str); 11] = [
+        (0, 90, "gate"),
+        (2, 160, "trench"),
+        (4, 120, "convoy"),
+        (9, 220, "night"),
+        (6, 240, "heat"),
+        (13, 260, "guidance"),
+        (11, 160, "fpv"),
+        (12, 300, "lane"),
+        (20, 200, "lift"),
+        (23, 150, "crows"),
+        (26, 200, "winter"),
+    ];
+    reserve_glass();
+    install_floor();
+    clock_start();
+    let mut gfx = gba.graphics.get();
+    gfx.set_background_palettes(backgrounds::PALETTES);
+    let floor = ground();
+    clear_ground_map();
+    let vblank = VBlank::get();
+
+    hide_ground();
+    for (name, card) in [
+        ("studio", None),
+        ("briefing", Some(0u8)),
+        ("briefing_lane", Some(12)),
+    ] {
+        vblank.wait_for_vblank();
+        forget_sheets();
+        let mut frame = gfx.frame();
+        if let Some(level) = card {
+            gfx_backdrop(Rgb::new(24, 64, 128));
+            draw_select(
+                &mut frame,
+                level,
+                0b101,
+                (level > 0, true),
+                0,
+                sensor_of(level),
+                None,
+            );
+        } else {
+            gfx_backdrop(Rgb::new(120, 152, 168));
+            draw_studio(&mut frame, 0);
+        }
+        frame.commit();
+        agb::test_runner::assert_image_output(&alloc::format!("target/screens/{name}.png"));
+    }
+
+    let mut bench = Bench::default();
+    for (level, frames, name) in FLIGHTS {
+        let sensor = sensor_of(level);
+        hide_ground();
+        let world = crate::pilot::fly_for(floor, level, frames, &mut |world, floor| {
+            glass_frame(&mut gfx, world, floor, sensor, &mut bench);
+            world.sync_ground(&mut || {});
+        });
+        for _ in 0..3 {
+            glass_frame(&mut gfx, &world, floor, sensor, &mut bench);
+        }
+        agb::test_runner::assert_image_output(&alloc::format!("target/screens/{name}.png"));
+    }
+}
+
+/// Colour 0 of the background palette, which the cards use as the backdrop.
+#[cfg(feature = "screens")]
+fn gfx_backdrop(colour: Rgb) {
+    unsafe { (0x0500_0000 as *mut u16).write_volatile(colour.to_rgb15().0) };
 }

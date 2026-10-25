@@ -1,5 +1,6 @@
 use super::*;
 use crate::backgrounds;
+use crate::draw::{find_haze_tile, haze_tile};
 use agb::display::tiled::AffineBackground;
 use agb::fixnum::num;
 use agb::input::{Button, ButtonController, Tri};
@@ -921,6 +922,16 @@ impl super::World {
         for tile in (T_SKY as u16)..=last {
             bg.set_tile((tile as i32, 0), &backgrounds::TERRAIN.tiles, tile);
         }
+        let haze = T_HAZE as u16;
+        bg.set_tile((haze as i32, 0), &backgrounds::TERRAIN.tiles, haze);
+        find_haze_tile();
+    }
+
+    /// The cell of the ring opposite the airframe. The window never reaches
+    /// it, so it holds the sky's ramp. The edge of the window writes the
+    /// field over it again as the aircraft comes round.
+    pub(crate) fn haze_cell(&self) -> (i32, i32) {
+        (self.view_tx + VIEW / 2, self.view_ty + VIEW / 2)
     }
 
     /// The window is thousands of tiles. `pump` keeps the music buffer full
@@ -977,6 +988,11 @@ impl super::World {
                 }
             }
             pump();
+        }
+        let hardware = haze_tile();
+        if hardware != 0 {
+            let (hx, hy) = self.haze_cell();
+            poke_cell(hx, hy, hardware);
         }
     }
 
@@ -1081,6 +1097,11 @@ impl super::World {
         {
             return;
         }
+        // Nobody digs in beside the pad: a sortie starts out of rifle range.
+        let (pad_x, pad_y) = start_tile(self.level);
+        if (tx - pad_x).abs() <= 12 && (ty - pad_y).abs() <= 12 {
+            return;
+        }
         let seeded = terrain(self.level, tx, ty);
         if seeded == T_TRENCH && hash(tx, ty) % 6 == 1 {
             if self.ground_at(tx, ty) == T_TRENCH && !self.is_quiet(tx, ty) {
@@ -1128,12 +1149,22 @@ impl super::World {
 /// Write one cell of the 128×128 ground window. The tileset is parked one
 /// slot up, so tile 0 is hardware index 1.
 fn poke_ground(tx: i32, ty: i32, tile: u8) {
-    let hx = tx.rem_euclid(VIEW) as usize;
-    let hy = ty.rem_euclid(VIEW) as usize;
+    poke_cell(tx, ty, tile + 1);
+}
+
+/// A byte store to background VRAM lands in both halves of its halfword, so
+/// it would also overwrite the cell beside it. The pair is read and written whole.
+fn poke_cell(tx: i32, ty: i32, hardware: u8) {
+    let cell = (ty.rem_euclid(VIEW) * VIEW + tx.rem_euclid(VIEW)) as usize;
     unsafe {
-        (0x0600_C000 as *mut u8)
-            .add(hy * 128 + hx)
-            .write_volatile(tile + 1);
+        let pair = (0x0600_C000 as *mut u16).add(cell / 2);
+        let old = pair.read_volatile();
+        let new = if cell & 1 == 0 {
+            (old & 0xFF00) | u16::from(hardware)
+        } else {
+            (old & 0x00FF) | (u16::from(hardware) << 8)
+        };
+        pair.write_volatile(new);
     }
 }
 

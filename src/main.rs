@@ -45,6 +45,7 @@ include_aseprite!(
     64x32 "gfx/bunker_near.png",
     32x32 "gfx/soldier.png",
     32x64 "gfx/soldier_near.png",
+    32x32 "gfx/soldier_top.png",
     16x16 "gfx/foe.png",
     32x32 "gfx/geran.png",
     8x8 "gfx/spark.png",
@@ -453,7 +454,7 @@ fn main(mut gba: agb::Gba) -> ! {
             continue;
         }
 
-        let looking_down = world.hover && matches!(phase, Phase::Fly | Phase::Pause);
+        let looking_down = world.looking_down() && matches!(phase, Phase::Fly | Phase::Pause);
         set_nadir(if looking_down {
             nadir_scale(world.alt)
         } else {
@@ -467,6 +468,7 @@ fn main(mut gba: agb::Gba) -> ! {
             world.alt.max(256),
             world.yaw,
             horizon,
+            world.haze_cell(),
         );
 
         let sky_h = sky_bottom(horizon, world.alt);

@@ -7,6 +7,11 @@ description = "FPV drone bomber for the Game Boy Advance"
 [dependencies]
 agb = "0.25.0"
 
+[features]
+# `cargo test --release --features screens` draws the guide's pictures into
+# target/screens. tools/screens.py enlarges them into docs/screens.
+screens = []
+
 [profile.dev]
 opt-level = 3
 debug = true
@@ -20,3 +25,7 @@ opt-level = 3
 lto = "fat"
 debug = true
 panic = "abort"
+
+# Sorted sprite palettes. See vendor/README.md.
+[patch.crates-io]
+agb_image_converter = { path = "vendor/agb_image_converter" }

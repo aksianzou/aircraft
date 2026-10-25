@@ -348,9 +348,25 @@ pub(crate) fn show_soldier(
     let frame_index = projection(pitch, fx, fy, sin_r, cos_r);
     let bob = ((soldier.step / 8) & 1) as i32;
     let sy = sy - bob;
-    // Overhead stays the small stamp. A close pass uses the tall figure,
-    // with a roof plane and a shadow side, once the stamp would only swell.
-    if scale.near && frame_index < 8 {
+    // Straight down, the plan sheet: a helmet, shoulders and the rifle. A
+    // close pass uses the tall figure, with a roof plane and a shadow side,
+    // once the stamp would only swell.
+    if scale.plan {
+        show_figure(
+            frame,
+            sprites::SOLDIER_TOP.sprite(frame_index & 7),
+            (sx, sy),
+            Art {
+                w: 32,
+                h: 32,
+                ink: 18,
+                foot: 16,
+            },
+            scale.span,
+            true,
+            Coat::of(sensor, wreck),
+        );
+    } else if scale.near && frame_index < 8 {
         show_figure(
             frame,
             sprites::SOLDIER_NEAR.sprite(four_view(frame_index)),
@@ -416,19 +432,14 @@ pub(crate) fn show_truck(
     let oct = heading_octant(fwd, right);
     let pitched = pitch.sin().to_raw() >= 100;
     let (sprite, native_w, native_h, ink, foot) = if scale.plan {
-        // The ink is the long axis of that frame, so turning does not resize it.
-        let ink = match oct & 7 {
-            0 => 12,
-            2 | 6 => 16,
-            4 => 15,
-            _ => 19,
-        };
-        (sprites::TRUCK_TOP.sprite(oct), 32, 32, ink, 25)
+        // Every sheet is one model at one scale (tools/voxel.py), so one ink
+        // per sheet keeps the size through a turn and from one view to the next.
+        (sprites::TRUCK_TOP.sprite(oct), 32, 32, 12, 16)
     } else if scale.near && !pitched {
-        (sprites::TRUCK_NEAR.sprite(four_view(oct)), 64, 32, 21, 29)
+        (sprites::TRUCK_NEAR.sprite(four_view(oct)), 64, 32, 24, 27)
     } else {
         let index = level_octant(oct) + if pitched { 8 } else { 0 };
-        (sprites::TRUCK.sprite(index), 32, 32, 9, 25)
+        (sprites::TRUCK.sprite(index), 32, 32, 13, 25)
     };
     show_figure(
         frame,
@@ -483,18 +494,12 @@ pub(crate) fn show_tank(
     let oct = heading_octant(fwd, right);
     let pitched = pitch.sin().to_raw() >= 100;
     let (sprite, native_w, native_h, ink, foot) = if scale.plan {
-        let ink = match oct & 7 {
-            0 => 12,
-            4 => 14,
-            2 | 6 => 17,
-            _ => 18,
-        };
-        (sprites::TANK_TOP.sprite(oct), 32, 32, ink, 25)
+        (sprites::TANK_TOP.sprite(oct), 32, 32, 9, 16)
     } else if scale.near && !pitched {
-        (sprites::TANK_NEAR.sprite(four_view(oct)), 64, 32, 21, 27)
+        (sprites::TANK_NEAR.sprite(four_view(oct)), 64, 32, 20, 26)
     } else {
         let index = level_octant(oct) + if pitched { 8 } else { 0 };
-        (sprites::TANK.sprite(index), 32, 32, 8, 25)
+        (sprites::TANK.sprite(index), 32, 32, 9, 24)
     };
     show_figure(
         frame,
@@ -553,17 +558,12 @@ pub(crate) fn show_bunker(
     let oct = heading_octant(fwd, right);
     let pitched = pitch.sin().to_raw() >= 100;
     let (sprite, native_w, native_h, ink, foot) = if scale.plan {
-        let ink = match oct & 7 {
-            2 | 6 => 12,
-            0 | 4 => 14,
-            _ => 18,
-        };
-        (sprites::BUNKER_TOP.sprite(oct), 32, 32, ink, 25)
+        (sprites::BUNKER_TOP.sprite(oct), 32, 32, 13, 16)
     } else if scale.near && !pitched {
-        (sprites::BUNKER_NEAR.sprite(four_view(oct)), 64, 32, 22, 29)
+        (sprites::BUNKER_NEAR.sprite(four_view(oct)), 64, 32, 26, 27)
     } else {
         let index = level_octant(oct) + if pitched { 8 } else { 0 };
-        (sprites::BUNKER.sprite(index), 32, 32, 8, 25)
+        (sprites::BUNKER.sprite(index), 32, 32, 14, 23)
     };
     show_figure(
         frame,

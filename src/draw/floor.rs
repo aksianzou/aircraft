@@ -19,6 +19,9 @@ pub(crate) fn mask_view(
     if !cockpit {
         {
             let sky = frame.windows().win_in(WinIn::Win0).enable_objects();
+            if haze_tile() != 0 {
+                sky.enable_background(ground_id);
+            }
             if night || wash {
                 sky.enable_blending();
             }
@@ -39,6 +42,9 @@ pub(crate) fn mask_view(
     let sky_span = sky_bot - VIEW_Y;
     if sky_span > 0 {
         let sky = frame.windows().win_in(WinIn::Win1).enable_objects();
+        if haze_tile() != 0 {
+            sky.enable_background(ground_id);
+        }
         if night || wash {
             sky.enable_blending();
         }
@@ -64,9 +70,11 @@ pub(crate) fn mask_view(
 
 pub(crate) fn clear_ground_map() {
     unsafe {
-        let map = 0x0600_C000 as *mut u8;
-        for cell in 0..(128 * 128) {
-            map.add(cell).write_volatile(T_FLOOR + 1);
+        // Whole halfwords: a byte store to background VRAM is written twice.
+        let map = 0x0600_C000 as *mut u16;
+        let pair = u16::from(T_FLOOR + 1) * 0x0101;
+        for cell in 0..(128 * 128 / 2) {
+            map.add(cell).write_volatile(pair);
         }
     }
 }
@@ -276,10 +284,72 @@ pub(crate) fn publish_floor() {
     }
 }
 
+/// The hardware slot of the haze ramp. agb drops duplicate tiles, so its
+/// slot is not simply its place in the sheet. 0 until the sheet is parked.
+pub(crate) struct HazeTile(core::cell::UnsafeCell<u8>);
+
+unsafe impl Sync for HazeTile {}
+
+static HAZE_TILE: HazeTile = HazeTile(core::cell::UnsafeCell::new(0));
+
+pub(crate) fn haze_tile() -> u8 {
+    unsafe { *HAZE_TILE.0.get() }
+}
+
+/// Find the ramp among the parked tiles by its shape: sixteen different
+/// texels, then the last of them repeated. Then have the glass paint it.
+pub(crate) fn find_haze_tile() {
+    let found = (1..=64u8).find(|&slot| {
+        let texel = |index: usize| unsafe {
+            ((0x0600_0000 + usize::from(slot) * 64 + index) as *const u8).read_volatile()
+        };
+        let mut seen = 0u32;
+        for index in 0..16 {
+            seen |= 1 << (texel(index) & 31);
+        }
+        seen.count_ones() == 16 && (16..64).all(|index| texel(index) == texel(15))
+    });
+    unsafe { *HAZE_TILE.0.get() = found.unwrap_or(0) };
+    repaint_haze();
+}
+
+/// Lines from the edge of the ground to the top of the ramp.
+const HAZE_SPAN: i32 = 96;
+
+/// A sky line: no step across, so the whole line is one texel of the ramp.
+/// The bottom of the sky is the haze, the zenith is texel 0.
+#[inline(always)]
+fn haze_line(haze: (i32, i32), sky_h: i32, scanline: i32) -> FloorLine {
+    let up = sky_h - 1 - scanline;
+    // In quarter steps. Between two texels the lines take turns, a quarter,
+    // a half or three quarters of them a step higher, so the ramp has no bands.
+    let quarters = (up * 15 * 4 / HAZE_SPAN).min(60);
+    let mut step = 15 - quarters / 4;
+    if quarters % 4 > [0, 2, 1, 3][(scanline & 3) as usize] {
+        step -= 1;
+    }
+    let (hx, hy) = haze;
+    FloorLine {
+        a: 0,
+        b: 0,
+        c: 0,
+        d: 0,
+        x: ((hx.rem_euclid(VIEW) * 8 + step % 8) << 8) + 128,
+        y: ((hy.rem_euclid(VIEW) * 8 + step / 8) << 8) + 128,
+    }
+}
+
 /// ARM code in IWRAM: 160 lines of multiplies and a division each, every frame.
 #[unsafe(link_section = ".iwram")]
 #[instruction_set(arm::a32)]
-pub(crate) fn build_floor(cam_x: i32, cam_y: i32, alt: i32, yaw: Num<i32, 8>, horizon: i32) {
+pub(crate) fn build_floor(
+    cam_x: i32,
+    cam_y: i32,
+    alt: i32,
+    yaw: Num<i32, 8>,
+    horizon: i32,
+    haze: (i32, i32),
+) {
     let cos = yaw.cos().to_raw();
     let sin = yaw.sin().to_raw();
     let down = nadir_on();
@@ -304,6 +374,17 @@ pub(crate) fn build_floor(cam_x: i32, cam_y: i32, alt: i32, yaw: Num<i32, 8>, ho
                     x: cam_x + cos_right + ((ahead * sin) >> 8),
                     y: cam_y + sin_right - ((ahead * cos) >> 8),
                 };
+            }
+        } else if haze_tile() != 0 {
+            // The sky window shows these lines down to its bottom edge, which
+            // also hides the far floor.
+            let sky_h = sky_bottom(horizon, alt).min(HEIGHT);
+            for scanline in 0..sky_h {
+                buf[scanline as usize] = haze_line(haze, sky_h, scanline);
+            }
+            for scanline in sky_h..HEIGHT {
+                buf[scanline as usize] =
+                    perspective_line(cam_x, cam_y, alt, sin, cos, scanline, horizon);
             }
         } else {
             // Above the horizon every line is the same vanishing point.

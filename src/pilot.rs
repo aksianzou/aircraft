@@ -1097,12 +1097,8 @@ fn card_name(level: u8) -> &'static str {
 
 #[test_case]
 fn campaign_sorties(_gba: &mut agb::Gba) {
-    let mut floor = AffineBackground::new(
-        agb::display::Priority::P1,
-        agb::display::tiled::AffineBackgroundSize::Background64x64,
-        agb::display::tiled::AffineBackgroundWrapBehaviour::Wrap,
-    );
-    let (cleared, starred) = survey(&mut floor);
+    let floor = crate::tests::ground();
+    let (cleared, starred) = survey(floor);
     // Cards a stick pilot has already cleared. A miss here is a regression.
     // The other lines in the log are the sorts the pilot does not finish.
     let proved = (1 << 0)

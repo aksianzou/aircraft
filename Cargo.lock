@@ -54,8 +54,6 @@ dependencies = [
 [[package]]
 name = "agb_image_converter"
 version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ad581ca4125ca246bf470912306704be0c927aa926602df5e9797bf8fccdbd3"
 dependencies = [
  "asefile",
  "fontdue",

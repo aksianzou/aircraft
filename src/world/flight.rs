@@ -8,6 +8,13 @@ impl super::World {
         (self.yaw.sin().to_raw(), self.yaw.cos().to_raw())
     }
 
+    /// The glass points straight down: the hover slide, or the mine quad.
+    /// On a defence card the hover is the gun sitting on the pad, and it
+    /// looks along its barrel instead.
+    pub(crate) fn looking_down(&self) -> bool {
+        self.hover && !defend_card(self.level)
+    }
+
     pub(crate) fn horizon(&self) -> i32 {
         // Pitch is in turns (1.0 = full circle). A dive lifts the horizon.
         let pitch_px = (self.pitch * Num::new(220)).to_raw() >> 8;

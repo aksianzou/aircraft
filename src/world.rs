@@ -72,6 +72,8 @@ pub(crate) const T_BUSH: u8 = 15;
 pub(crate) const T_PATCH: u8 = 16;
 /// A trunk left after a fire. The tile is scorched mud, the sprite is the stick.
 pub(crate) const T_STUMP: u8 = 17;
+/// Sixteen texels from the zenith to the haze. The sky's lines point at them.
+pub(crate) const T_HAZE: u8 = 21;
 
 pub(crate) const LEVEL_COUNT: u8 = 30;
 /// A battery sees the drone only inside its circle, and only under this height.
@@ -330,10 +332,27 @@ pub(crate) fn time_budget(level: u8) -> i32 {
         Task::Grove | Task::Thaw => 3600,
         Task::Hearth => 2700,
     };
+    let frames = frames + approach_frames(level);
     if haul_card(level) || defend_card(level) {
         frames + 1200
     } else {
         frames
+    }
+}
+
+/// The time a pad moved back adds to the run: about six frames a tile for a
+/// quad, forty for the spotter, and the FPV flies it once for every drone.
+fn approach_frames(level: u8) -> i32 {
+    match task_of(level) {
+        Task::Trench | Task::Officer | Task::Hq | Task::Pill => 150,
+        Task::Night | Task::Grove | Task::Hearth => 100,
+        Task::Heat => 50,
+        Task::Pits => 80,
+        Task::Armor => 220,
+        Task::Guide => 540,
+        Task::Column => 780,
+        Task::Nest => 520,
+        _ => 0,
     }
 }
 
@@ -750,27 +769,37 @@ pub(crate) fn hash(x: i32, y: i32) -> u32 {
 }
 
 pub(crate) fn start_tile(level: u8) -> (i32, i32) {
+    // The pad sits a run south of the work, so a sortie opens with the
+    // targets ahead and not under the nose. Pads stay off the trench rows
+    // (20 and 36 of each 64) and the roads. The cards that need them close
+    // keep them close: the lesson, the chase, the spotter's clocks, the mine
+    // hauls, the pad under attack, the escort, and the snow cards laid out
+    // around their pad. `approach_frames` pays for each extra run.
     match task_of(level) {
-        // A short run north to the mark. Not on top of it, and not a haul.
-        Task::Trench | Task::Officer | Task::Hq | Task::Pill => (24, 46),
-        Task::Night => (24, 52),
-        Task::Heat => (24, 26),
+        Task::Trench | Task::Officer | Task::Hq | Task::Pill => (24, 58),
+        Task::Night => (24, 60),
+        Task::Heat => (24, 30),
         Task::Convoy => (8, 48),
         // Off the posts and short of them, so the first card has to turn.
         Task::Gate => (14, 84),
         Task::Fpv => (24, 92),
-        Task::Guide => (24, 44),
-        Task::Column | Task::Armor | Task::Fetch | Task::Swarm => (24, 90),
+        Task::Guide => (24, 56),
+        Task::Column | Task::Armor => (24, 108),
+        Task::Fetch => (24, 90),
+        Task::Swarm if defend_card(level) => (24, 90),
+        Task::Swarm => (24, 90),
         Task::Rush => (24, 68),
         Task::Push => (24, 80),
         // South of the first guns, so the lane itself is the flight.
-        Task::Lane | Task::Flare | Task::Nest | Task::Dart | Task::Bend | Task::Skirt => (22, 88),
+        Task::Lane | Task::Flare | Task::Dart | Task::Bend | Task::Skirt => (22, 88),
+        // The first nest is in the lane's first gap: the pad stays well short.
+        Task::Nest => (22, 108),
         Task::Cover => (24, 64),
-        Task::Pits => (24, 54),
-        Task::Grove => (24, 62),
+        Task::Pits => (24, 60),
+        Task::Grove => (24, 70),
         Task::Drift => (14, 62),
         Task::Thaw => (24, 68),
-        Task::Hearth => (24, 58),
+        Task::Hearth => (24, 66),
     }
 }
 

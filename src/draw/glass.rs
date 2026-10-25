@@ -72,14 +72,20 @@ pub(crate) fn queue_look(sensor: Sensor, sky: Rgb15) {
 pub(crate) fn flush_look() {
     unsafe {
         let look = &mut *LOOK.0.get();
+        let mut haze = false;
         if look.applied != look.sensor {
             paint_sensor(sensor_from(look.sensor));
             look.applied = look.sensor;
+            haze = true;
         }
         if look.sky_applied != look.sky {
             let ram = 0x0500_0000 as *mut u16;
             ram.write_volatile(look.sky);
             look.sky_applied = look.sky;
+            haze = true;
+        }
+        if haze {
+            paint_haze(look.sky, sensor_from(look.sensor));
         }
     }
 }
@@ -121,7 +127,6 @@ struct Held {
     plant_i: u8,
     warm_i: u8,
     flame_i: u8,
-    ash_i: u8,
 }
 
 struct HeldCell(core::cell::UnsafeCell<Held>);
@@ -134,7 +139,6 @@ static HELD: HeldCell = HeldCell(core::cell::UnsafeCell::new(Held {
     plant_i: 0,
     warm_i: 0,
     flame_i: 0,
-    ash_i: 0,
 }));
 
 /// Take a palette before the pictures load. Every entry is part of the mark,
@@ -174,17 +178,9 @@ pub(crate) fn reserve_glass() {
         }
         if let Some((palette, bank)) = claim_ramp(0x4004) {
             held.ash = Some(palette);
-            held.ash_i = bank;
             paint_bank(bank, soot);
         }
     }
-}
-
-/// The banks a filter repaints. Their colours follow the glass, not the sheet.
-#[cfg(test)]
-pub(crate) fn glass_banks() -> [u8; 4] {
-    let held = unsafe { &*HELD.0.get() };
-    [held.plant_i, held.warm_i, held.flame_i, held.ash_i]
 }
 
 fn paint_bank(bank: u8, map: impl Fn(u16) -> u16) {
@@ -357,6 +353,7 @@ fn flame_ir(_colour: u16) -> u16 {
 fn tone_colour(sensor: Sensor, tone: Tone, colour: u16) -> u16 {
     match (sensor, tone) {
         (_, Tone::Ash) => soot(colour),
+        (Sensor::Night, Tone::Plant) => nvg_plant(colour),
         (Sensor::Night, _) => nvg_body(colour),
         (Sensor::Ir, Tone::Flame) => flame_ir(colour),
         (Sensor::Ir, _) => ir_body(colour),
@@ -366,10 +363,12 @@ fn tone_colour(sensor: Sensor, tone: Tone, colour: u16) -> u16 {
     }
 }
 
+/// Burnt out: charcoal in the shade, ash grey where the light falls, a little
+/// warmth left in the metal. Dark, but the shape still reads.
 fn soot(colour: u16) -> u16 {
     let y = luma(colour);
-    let v = (if y % 3 == 0 { 2 } else { 1 }) as u16;
-    v | (v << 5) | (v << 10)
+    let v = (3 + y * 2 / 3).clamp(3, 14) as u16;
+    (v + 1) | (v << 5) | (v.saturating_sub(1) << 10)
 }
 
 fn on_list(sprite: &'static Sprite, tags: &[&agb::display::object::Tag]) -> bool {
@@ -389,6 +388,7 @@ fn tone_of(sprite: &'static Sprite) -> Option<Tone> {
         &[
             &sprites::SOLDIER,
             &sprites::SOLDIER_NEAR,
+            &sprites::SOLDIER_TOP,
             &sprites::TANK,
             &sprites::TANK_NEAR,
             &sprites::TANK_TOP,
@@ -446,10 +446,19 @@ pub(crate) struct LampHold(core::cell::UnsafeCell<Option<PaletteVram>>);
 unsafe impl Sync for LampHold {}
 pub(crate) static NVG_LAMP: LampHold = LampHold(core::cell::UnsafeCell::new(None));
 
-pub(crate) fn nvg_body(colour: u16) -> u16 {
+/// Crowns stay in the field's green: a tree is not a body.
+fn nvg_plant(colour: u16) -> u16 {
     let y = luma(colour);
     let green = (18 + y / 2).clamp(16, 31) as u16;
     (green / 6) | (green << 5) | ((green / 5) << 10)
+}
+
+/// A body glows above everything the ground can reach (24 at most), and a
+/// little white keeps the brightest parts from being only greener grass.
+pub(crate) fn nvg_body(colour: u16) -> u16 {
+    let y = luma(colour);
+    let green = (24 + y / 2).clamp(24, 31) as u16;
+    (green / 3) | (green << 5) | ((green / 3) << 10)
 }
 
 pub(crate) fn channels(colour: u16) -> (i32, i32, i32) {
@@ -466,4 +475,45 @@ pub(crate) fn luma(colour: u16) -> i32 {
 
 pub(crate) fn glass_now() -> Sensor {
     unsafe { sensor_from((*LOOK.0.get()).sensor) }
+}
+
+/// Paint the ramp again at the next vblank. A new sheet may sit in another slot.
+pub(crate) fn repaint_haze() {
+    unsafe { (*LOOK.0.get()).sky_applied = 0xFFFF };
+}
+
+/// The ramp's sixteen colours, written to whatever palette entries its texels
+/// use. Dark at the zenith, then the glass's own haze toward the ground.
+fn paint_haze(sky: u16, sensor: Sensor) {
+    let tile = haze_tile();
+    if tile == 0 {
+        return;
+    }
+    let (r, g, b) = channels(sky);
+    // The zenith is the sky deepened: less red, a little less green.
+    let top = (r / 2, g * 2 / 3, b * 9 / 10);
+    let glow = match sensor {
+        Sensor::Day | Sensor::Winter => (28, 29, 28),
+        Sensor::Night => (8, 26, 8),
+        Sensor::Heat => (7, 3, 10),
+        Sensor::Ir => (12, 12, 12),
+    };
+    let low = (
+        r + (glow.0 - r) * 2 / 5,
+        g + (glow.1 - g) * 2 / 5,
+        b + (glow.2 - b) * 2 / 5,
+    );
+    for step in 0..16 {
+        // Most of the change sits near the ground, the way haze thickens.
+        let mix = step * step;
+        let blend = |from: i32, to: i32| (from + (to - from) * mix / 225).clamp(0, 31) as u16;
+        let colour = blend(top.0, low.0) | (blend(top.1, low.1) << 5) | (blend(top.2, low.2) << 10);
+        unsafe {
+            let entry = ((0x0600_0000 + usize::from(tile) * 64 + step as usize) as *const u8)
+                .read_volatile();
+            (0x0500_0000 as *mut u16)
+                .add(usize::from(entry))
+                .write_volatile(colour);
+        }
+    }
 }

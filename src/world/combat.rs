@@ -100,7 +100,12 @@ impl super::World {
 
     /// A burst along the nose to the ground. It hurts people and trucks, not the ground.
     /// A hostile quad in the crosshair is the target instead, so the round meets that picture.
+    /// The gun lies along the nose. Looking straight down there is nothing
+    /// in front of it to hit, so it stays quiet.
     pub(crate) fn try_gun(&mut self) -> bool {
+        if self.looking_down() {
+            return false;
+        }
         let (sin_r, cos_r) = self.heading();
         let (nx, ny, nz) = if let Some(index) = self.foe_under_sight() {
             let foe = &self.foes[index];

@@ -1,0 +1,30 @@
+[package]
+name = "agb_image_converter"
+version = "0.25.0"
+authors = ["Gwilym Inzani <gw@ilym.me>"]
+edition = "2024"
+license = "MPL-2.0"
+description = "Library for converting graphics for use on the Game Boy Advance"
+repository = "https://github.com/agbrs/agb"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+image = { version = "0.24", default-features = false, features = [
+    "png",
+    "bmp",
+    "gif",
+] }
+syn = { version = "2", features = ["proc-macro", "parsing"] }
+proc-macro2 = "1"
+quote = "1"
+asefile = "0.3.8"
+fontdue = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pagination-packing = "2.1.0"
+snafu = "0.9.0"
+
+[dev-dependencies]
+quickcheck = "1"
